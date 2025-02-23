@@ -9,7 +9,8 @@ import {
   ChevronRightIcon,
   XMarkIcon,
   HomeIcon,
-  EyeIcon
+  EyeIcon,
+  ChevronDownIcon
 } from '@heroicons/react/24/outline';
 import html2canvas from 'html2canvas';
 
@@ -38,6 +39,7 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
   const [visionAnalysis, setVisionAnalysis] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isMetadataVisible, setIsMetadataVisible] = useState(false);
 
   const handleBoundaryComplete = useCallback((shape: google.maps.Polygon) => {
     console.log('Boundary complete:', shape);
@@ -253,6 +255,59 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
                       <span className="ml-1 text-gray-900">16 ft</span>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Property Metadata - Collapsible */}
+            <div className="border-t border-blue-100 pt-3 mt-3">
+              <button
+                onClick={() => setIsMetadataVisible(!isMetadataVisible)}
+                className="w-full flex items-center justify-between text-sm font-medium text-blue-700 hover:text-blue-800 transition-colors"
+              >
+                <span>Property Metadata</span>
+                <ChevronDownIcon 
+                  className={`h-5 w-5 transition-transform ${isMetadataVisible ? 'rotate-180' : ''}`}
+                />
+              </button>
+              <div className={`transition-all duration-200 ease-in-out ${isMetadataVisible ? 'max-h-[500px] opacity-100 mt-2' : 'max-h-0 opacity-0 overflow-hidden'}`}>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {placeDetails?.types?.length > 0 && (
+                    <div>
+                      <span className="text-gray-600">Type:</span>
+                      <span className="text-gray-900 ml-1">
+                        {placeDetails.types[0].replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                  )}
+                  {initialAnalysis?.zoning && (
+                    <div>
+                      <span className="text-gray-600">Zoning:</span>
+                      <span className="text-gray-900 ml-1">{initialAnalysis.zoning}</span>
+                    </div>
+                  )}
+                  {initialAnalysis?.maxSize && (
+                    <div>
+                      <span className="text-gray-600">Max ADU Size:</span>
+                      <span className="text-gray-900 ml-1">{initialAnalysis.maxSize} sqft</span>
+                    </div>
+                  )}
+                  {placeDetails?.geometry?.location && (
+                    <>
+                      <div>
+                        <span className="text-gray-600">Lat:</span>
+                        <span className="text-gray-900 ml-1">
+                          {placeDetails.geometry.location.lat().toFixed(6)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Lng:</span>
+                        <span className="text-gray-900 ml-1">
+                          {placeDetails.geometry.location.lng().toFixed(6)}
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

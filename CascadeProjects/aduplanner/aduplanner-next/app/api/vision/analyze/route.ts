@@ -18,55 +18,92 @@ export async function POST(request: NextRequest) {
     }
 
     const response = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini-2024-07-18",
+      model: process.env.OPENAI_MODEL || "gpt-4-vision-preview",
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: `Analyze this satellite image of a property and provide a detailed assessment for ADU planning with a focus on ADA compliance:
+              text: `Analyze this satellite image and identify features that would impact ADU construction that aren't visible in standard mapping data. Focus on qualitative assessment and visual identification:
 
-1. Property Analysis:
-   - Property type (single family, townhouse, etc.)
-   - Lot size and shape
-   - Terrain features (slopes, grade changes)
-   - Cardinal directions (for solar considerations)
+1. Existing Structures:
+   - Identify and classify all structures (house, garage, shed, pool, etc.)
+   - Assess their condition (excellent, good, poor)
+   - Note any obvious modifications or temporary structures
+   - Describe their locations relative to property boundaries
 
-2. Existing Structures and Features:
-   - Main house location and approximate size
-   - Other structures (garages, sheds, etc.)
-   - Pool, patio, or deck areas
-   - Driveways and parking areas
-   - Trees and significant landscaping
-   - Areas not suitable for construction (e.g., existing amenities like pools, designated easements, or other restricted zones)
+2. Setbacks & Buildable Areas:
+   - Estimate actual setback distances from property lines (in feet)
+   - Identify any visible easements or right-of-ways
+   - Note any areas that appear off-limits for construction
+   - Identify potential buildable areas and their approximate sizes
 
-3. Setback and Buildable Area Analysis:
-   - Identify front, back, and side yard areas
-   - Estimate setback distances from property lines
-   - Note any easements or right-of-ways visible
-   - Calculate approximate buildable area sizes
-   - Highlight areas that are off-limits or otherwise restricted
+3. Terrain & Drainage:
+   - Describe ground conditions and slopes
+   - Identify any visible drainage patterns or issues
+   - Note any retaining walls or grade changes
+   - List both concerns and opportunities for construction
 
-4. ADA Compliance Considerations:
-   - Evaluate general accessibility of potential ADU locations (e.g., flat vs. sloped terrain)
-   - Identify possible entry points or pathways that could accommodate ramps or wheelchair-accessible walkways
-   - Note any existing features that could impact ADA compliance (e.g., steps, steep grades, narrow side yards)
-   - **EstimatedADACompliance**: Provide a rough percentage or confidence level indicating how feasible it is to achieve ADA compliance on this property
+4. Access & Privacy:
+   - Identify best construction access routes
+   - List existing privacy features (fences, trees)
+   - Note any access challenges
+   - Consider neighbor sight lines and privacy impacts
 
-5. ADU Placement Considerations:
-   - Identify optimal locations for ADU placement, factoring in ADA requirements
-   - Note any obstacles or constraints (utilities, drainage, etc.)
-   - Assess privacy factors relative to neighbors
-   - Consider access paths from street/driveway that could be made ADA-compliant
+5. Construction Suitability:
+   - Rate potential ADU locations (excellent, good, poor)
+   - Explain why each location is rated that way
+   - Note any visible utilities or constraints
+   - Add any general construction notes
 
-6. Measurements:
-   - Provide all measurements in feet
-   - Include rough dimensions of buildable areas
-   - Estimate distances between structures
-   - Indicate potential slopes or height differences that might affect ADA ramp design
-
-Format your response as JSON with sections matching the categories above.`
+Return ONLY the JSON with no markdown formatting or backticks. The response must be valid JSON that can be parsed directly:
+{
+  "structures": [
+    {
+      "type": string,
+      "condition": "excellent" | "good" | "poor",
+      "location": string,
+      "notes": string[]
+    }
+  ],
+  "setbacks": {
+    "front": number,
+    "back": number,
+    "left": number,
+    "right": number,
+    "notes": string[]
+  },
+  "buildableAreas": [
+    {
+      "location": string,
+      "suitability": "excellent" | "good" | "poor",
+      "estimatedSize": string,
+      "advantages": string[],
+      "challenges": string[]
+    }
+  ],
+  "terrain": {
+    "description": string,
+    "concerns": string[],
+    "opportunities": string[]
+  },
+  "access": {
+    "bestRoutes": string[],
+    "privacyFeatures": string[],
+    "challenges": string[]
+  },
+  "constructionSuitability": {
+    "bestLocations": [
+      {
+        "location": string,
+        "rating": "excellent" | "good" | "poor",
+        "reasons": string[]
+      }
+    ],
+    "generalNotes": string[]
+  }
+}`
             },
             {
               type: "image_url",
@@ -77,10 +114,34 @@ Format your response as JSON with sections matching the categories above.`
           ]
         }
       ],
-      max_tokens: 1000,
+      max_tokens: 1500,
     });
 
-    return NextResponse.json(response.choices[0]?.message?.content || {});
+    // Get the response content
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      return NextResponse.json({ error: "No analysis generated" }, { status: 500 });
+    }
+
+    try {
+      // Try to parse the content as JSON, removing any markdown formatting
+      const cleanContent = content.replace(/^```json\n|\n```$/g, '');
+      const analysisData = JSON.parse(cleanContent);
+
+      // Validate the structure
+      if (!analysisData.structures || !analysisData.setbacks || !analysisData.buildableAreas) {
+        throw new Error("Invalid analysis structure");
+      }
+
+      // Return both raw and processed data
+      return NextResponse.json({
+        raw: content,
+        processed: analysisData
+      });
+    } catch (error) {
+      console.error("Error parsing analysis:", error);
+      return NextResponse.json({ error: "Invalid analysis format" }, { status: 500 });
+    }
   } catch (error: any) {
     console.error('Vision analysis error:', error);
     return NextResponse.json(

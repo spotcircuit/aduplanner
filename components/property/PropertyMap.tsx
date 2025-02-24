@@ -1,11 +1,14 @@
 'use client';
 
-import { FC, useCallback, useState, useEffect } from 'react';
+import { FC, useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { GoogleMap, Marker, Polygon } from '@react-google-maps/api';
 import DrawingTools from '../map/tools/DrawingTools';
-import DrawingInstructions from './DrawingInstructions';
 import type { LatLngLiteral } from '@googlemaps/google-maps-services-js';
+import { BuildingTemplate } from '@/types/building';
 import { LightBulbIcon } from '@heroicons/react/24/outline';
+import ConstraintLayer from '../map/layers/ConstraintLayer';
+import StructureTemplates from './StructureTemplates';
+import StructureVisualizer from './StructureVisualizer';
 
 export interface PropertyMapInstance {
   map: google.maps.Map | null;
@@ -23,13 +26,7 @@ interface PropertyMapProps {
   setDrawingMode: (mode: 'polygon' | null) => void;
   setIsDrawingActive: (active: boolean) => void;
   onAnalyze: (map: google.maps.Map, propertyMap: PropertyMapInstance) => Promise<void>;
-}
-
-interface BuildingTemplate {
-  name: string;
-  width: number;  // in feet
-  length: number; // in feet
-  color: string;
+  onDetectBoundaries: (map: google.maps.Map) => Promise<google.maps.LatLngLiteral[] | null>;
 }
 
 const BUILDING_TEMPLATES: BuildingTemplate[] = [
@@ -89,39 +86,46 @@ const PropertyMap: FC<PropertyMapProps> = ({
   drawingMode: externalDrawingMode,
   setDrawingMode: setExternalDrawingMode,
   setIsDrawingActive,
-  onAnalyze
+  onAnalyze,
+  onDetectBoundaries
 }) => {
   const [measurements, setMeasurements] = useState<{ distance: number | null; area: number | null }>({
     distance: null,
     area: null
   });
-  const [boundaryPath, setBoundaryPath] = useState(INITIAL_BOUNDARY);
-  const [cornerMarkers, setCornerMarkers] = useState<google.maps.LatLngLiteral[]>(INITIAL_BOUNDARY.slice(0, -1));
+  const [boundaryPath, setBoundaryPath] = useState<google.maps.LatLngLiteral[]>([]);
+  const [cornerMarkers, setCornerMarkers] = useState<google.maps.LatLngLiteral[]>([]);
   const [isBoundaryLocked, setIsBoundaryLocked] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<BuildingTemplate | null>(null);
-  const [buildingPosition, setBuildingPosition] = useState<google.maps.LatLngLiteral | null>(null);
-  const [buildingRotation, setBuildingRotation] = useState(0);
-  const [isQuerying, setIsQuerying] = useState(false);
+  const [showConstraints, setShowConstraints] = useState(false);
+  const [constraintAnalysis, setConstraintAnalysis] = useState<any>(null);
   const [showDesigns, setShowDesigns] = useState(false);
-  const [map, setMap] = useState<google.maps.Map | null>(null);
-  const [drawingMode, setDrawingMode] = useState<'polygon' | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [boundaryFromAI, setBoundaryFromAI] = useState(false);
+  const [selectedStructure, setSelectedStructure] = useState<{
+    template: BuildingTemplate;
+    position: google.maps.LatLngLiteral;
+    points?: google.maps.LatLngLiteral[];
+  } | null>(null);
 
+  const structurePolygonRef = useRef<google.maps.Polygon | null>(null);
+
+  const onPolygonLoad = useCallback((polygon: google.maps.Polygon) => {
+    structurePolygonRef.current = polygon;
+  }, []);
+
+  // Reset all boundary-related state when component mounts
   useEffect(() => {
-    if (map) {
-      setExternalMap(map);
-    }
-  }, [map, setExternalMap]);
+    setBoundaryPath([]);
+    setCornerMarkers([]);
+    setIsBoundaryLocked(false);
+    setShowDesigns(false);
+    setBoundaryFromAI(false);
+    setSelectedStructure(null);
+    setMeasurements({ distance: null, area: null });
+  }, []);
 
-  useEffect(() => {
-    setDrawingMode(externalDrawingMode);
-  }, [externalDrawingMode]);
-
-  useEffect(() => {
-    setExternalDrawingMode(drawingMode);
-  }, [drawingMode, setExternalDrawingMode]);
-
-  const defaultMapOptions = {
-    mapTypeId: 'satellite',
+  const defaultMapOptions = useMemo(() => ({
+    mapTypeId: 'hybrid',
     tilt: 0,
     mapTypeControl: true,
     streetViewControl: true,
@@ -131,63 +135,63 @@ const PropertyMap: FC<PropertyMapProps> = ({
     zoom: 19,
     center: location,
     mapTypeControlOptions: {
-      position: google.maps.ControlPosition.TOP_RIGHT
-    }
-  };
+      position: google.maps.ControlPosition.TOP_RIGHT,
+      mapTypeIds: ['hybrid', 'satellite', 'roadmap']
+    },
+    maxZoom: 21,
+    minZoom: 15,
+    scaleControl: true,
+    scrollwheel: true,
+    disableDoubleClickZoom: false,
+    styles: [
+      {
+        featureType: 'all',
+        elementType: 'labels',
+        stylers: [{ visibility: 'on' }]
+      }
+    ]
+  }), [location]);
 
   const onLoad = useCallback((map: google.maps.Map) => {
     console.log('Map loaded');
-    
-    // Center map on property location
     map.setCenter(location);
     map.setZoom(19);
-    
-    // Listen for tilesloaded to ensure everything is rendered
-    google.maps.event.addListenerOnce(map, 'tilesloaded', () => {
-      console.log('Map tiles loaded');
-    });
-    setMap(map);
-  }, [location]);
+    setExternalMap(map);
+  }, [location, setExternalMap]);
 
   const onUnmount = useCallback(() => {
-  }, []);
+    setExternalMap(null);
+  }, [setExternalMap]);
+
+  useEffect(() => {
+    if (externalMap) {
+      externalMap.setCenter(location);
+      externalMap.setZoom(19);
+    }
+  }, [location, externalMap]);
 
   const handleMarkerDrag = (index: number, position: google.maps.LatLng) => {
     const newMarkers = [...cornerMarkers];
     newMarkers[index] = { lat: position.lat(), lng: position.lng() };
     setCornerMarkers(newMarkers);
+    
+    // Update boundary path to match markers
+    setBoundaryPath([...newMarkers, newMarkers[0]]); // Close the polygon
 
-    const newPath = [...newMarkers];
-    // Close the polygon by adding the first point again
-    newPath.push(newMarkers[0]);
-    setBoundaryPath(newPath);
-  };
-
-  const handleBuildingDrag = (position: google.maps.LatLng) => {
-    setBuildingPosition({ lat: position.lat(), lng: position.lng() });
-  };
-
-  const handleRotateBuilding = (degrees: number) => {
-    setBuildingRotation((prev) => (prev + degrees) % 360);
-  };
-
-  const handlePolygonEdit = () => {
-    // Get the updated path from the polygon
-    const path = boundaryPath;
-    if (path) {
-      // Only update the midpoints, keep corners fixed
-      const newPath = [...cornerMarkers];
-      newPath.push(cornerMarkers[0]); // Close the polygon
-      setBoundaryPath(newPath);
+    // Only calculate area if boundary came from OpenAI
+    if (boundaryFromAI && window.google && window.google.maps.geometry) {
+      const path = newMarkers.map(coord => new google.maps.LatLng(coord.lat, coord.lng));
+      const area = google.maps.geometry.spherical.computeArea(path);
+      setMeasurements({ distance: null, area: Math.round(area * 10.764) }); // Convert to sq ft
     }
   };
 
   const handleOpenAIQuery = async () => {
-    if (!map) return;
+    if (!externalMap) return;
 
-    setIsQuerying(true);
+    setIsAnalyzing(true);
     try {
-      const bounds = map.getBounds();
+      const bounds = externalMap.getBounds();
       if (!bounds) {
         throw new Error('Map bounds not available');
       }
@@ -195,7 +199,7 @@ const PropertyMap: FC<PropertyMapProps> = ({
       // Get the current map view as an image
       const canvas = document.createElement('canvas');
       const scale = 2; // Higher resolution
-      const mapDiv = map.getDiv();
+      const mapDiv = externalMap.getDiv();
       canvas.width = mapDiv.clientWidth * scale;
       canvas.height = mapDiv.clientHeight * scale;
       
@@ -212,295 +216,383 @@ const PropertyMap: FC<PropertyMapProps> = ({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          imageUrl: screenshot.toDataURL('image/jpeg', 0.9),
-          type: 'property',
-          center: location,
-          bounds: {
-            north: bounds.getNorthEast().lat(),
-            south: bounds.getSouthWest().lat(),
-            east: bounds.getNorthEast().lng(),
-            west: bounds.getSouthWest().lng()
-          },
-          zoom: map.getZoom()
+          image: screenshot.toDataURL('image/jpeg', 0.9),
+          prompt: 'Analyze this satellite image to identify property boundaries',
+          propertyCenter: location,
+          zoomLevel: externalMap.getZoom() || 19
         }),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to analyze constraints');
+        throw new Error('Failed to analyze boundaries');
       }
 
       const data = await response.json();
-      onAnalyze(map, {
-        map,
-        drawingMode,
-        setDrawingMode: setExternalDrawingMode,
-        setIsDrawingActive
-      });
+      console.log('Vision analysis response:', data);
+
+      // Update boundary path and corner markers based on the analysis
+      if (data.parsed?.propertyBoundary?.coordinates) {
+        console.log('Property boundary coordinates:', data.parsed.propertyBoundary.coordinates);
+        const coordinates = data.parsed.propertyBoundary.coordinates;
+        console.log('Setting boundary path:', [...coordinates, coordinates[0]]);
+        console.log('Setting corner markers:', coordinates);
+        setBoundaryPath([...coordinates, coordinates[0]]); // Close the polygon
+        setCornerMarkers(coordinates);
+        setIsBoundaryLocked(true); // Lock the boundary since AI detected it
+        setBoundaryFromAI(true); // Set flag that boundary came from AI
+
+        // Calculate initial area after OpenAI detection
+        if (window.google && window.google.maps.geometry) {
+          const path = coordinates.map((coord: google.maps.LatLngLiteral) => new google.maps.LatLng(coord.lat, coord.lng));
+          const area = google.maps.geometry.spherical.computeArea(path);
+          setMeasurements({ distance: null, area: Math.round(area * 10.764) }); // Convert to sq ft
+        }
+      } else {
+        console.warn('No property boundary coordinates in response:', data);
+      }
     } catch (error) {
       console.error('Analysis error:', error);
     } finally {
-      setIsQuerying(false);
+      setIsAnalyzing(false);
     }
   };
 
+  useEffect(() => {
+    console.log('Constraint analysis state:', constraintAnalysis);
+    console.log('Show constraints state:', showConstraints);
+  }, [constraintAnalysis, showConstraints]);
+
+  // Helper function to calculate building polygon points based on position, size, and rotation
+  const calculateBuildingPolygon = (
+    center: google.maps.LatLngLiteral,
+    template: BuildingTemplate,
+    rotation: number = 0
+  ): google.maps.LatLngLiteral[] => {
+    // Convert feet to approximate latitude/longitude deltas
+    const feetToLatLng = 0.00000274; // rough approximation
+    const width = template.width * feetToLatLng;
+    const length = template.length * feetToLatLng;
+
+    // Calculate corners before rotation
+    const points = [
+      { lat: center.lat - width/2, lng: center.lng - length/2 },
+      { lat: center.lat - width/2, lng: center.lng + length/2 },
+      { lat: center.lat + width/2, lng: center.lng + length/2 },
+      { lat: center.lat + width/2, lng: center.lng - length/2 }
+    ];
+
+    // Rotate points around center
+    const rotatedPoints = points.map(point => {
+      const dx = point.lng - center.lng;
+      const dy = point.lat - center.lat;
+      const theta = (rotation * Math.PI) / 180;
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      
+      return {
+        lat: center.lat + (dy * cos - dx * sin),
+        lng: center.lng + (dx * cos + dy * sin)
+      };
+    });
+
+    // Close the polygon
+    return [...rotatedPoints, rotatedPoints[0]];
+  };
+
+  const calculateBuildingArea = (corners: google.maps.LatLngLiteral[]) => {
+    if (!window.google || !window.google.maps.geometry) return 0;
+    const path = corners.map(coord => new google.maps.LatLng(coord.lat, coord.lng));
+    const area = google.maps.geometry.spherical.computeArea(path);
+    return Math.round(area * 10.764); // Convert to sq ft
+  };
+
   return (
-    <div className="relative w-full rounded-lg overflow-hidden border-2 border-gray-200 mb-4">
-      {/* Map Controls */}
-      <div className="absolute top-0 left-0 z-10 p-4">
-        {!isBoundaryLocked ? (
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={() => setIsBoundaryLocked(true)}
-              className="px-4 py-2 bg-green-500 text-white rounded-lg shadow-md hover:bg-green-600"
-            >
-              Lock & Continue
-            </button>
-            <button
-              onClick={handleOpenAIQuery}
-              disabled={isQuerying}
-              className={`px-4 py-2 bg-purple-500 text-white rounded-lg shadow-md ${
-                isQuerying ? 'opacity-50 cursor-not-allowed' : 'hover:bg-purple-600'
-              }`}
-            >
-              {isQuerying ? 'Analyzing...' : 'Ask AI for Boundaries'}
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            <div className="flex gap-2">
-              <button
-                onClick={() => setIsBoundaryLocked(false)}
-                className="px-4 py-2 bg-yellow-500 text-white rounded-lg shadow-md hover:bg-yellow-600"
-              >
-                Edit Boundary
-              </button>
-              <button
-                onClick={() => setShowDesigns(!showDesigns)}
-                className={`px-4 py-2 ${
-                  showDesigns 
-                    ? 'bg-blue-500 hover:bg-blue-600' 
-                    : 'bg-green-500 hover:bg-green-600'
-                } text-white rounded-lg shadow-md`}
-              >
-                {showDesigns ? 'Hide Designs' : 'Show Designs'}
-              </button>
-              {selectedTemplate && (
+    <div className="relative w-full">
+      <div className="rounded-lg overflow-hidden border-2 border-gray-200 mb-4">
+        {/* Map Controls */}
+        <div className="absolute top-0 left-0 z-10 p-4">
+          {boundaryPath.length > 0 ? (
+            !isBoundaryLocked ? (
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => setIsBoundaryLocked(true)}
+                  className="px-4 py-2 bg-green-500 text-white rounded-lg shadow-md hover:bg-green-600"
+                >
+                  Lock & Continue
+                </button>
+                <button
+                  onClick={handleOpenAIQuery}
+                  disabled={isAnalyzing}
+                  className={`px-4 py-2 bg-purple-500 text-white rounded-lg shadow-md ${
+                    isAnalyzing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-purple-600'
+                  }`}
+                >
+                  {isAnalyzing ? (
+                    <div className="flex items-center gap-2">
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Analyzing...
+                    </div>
+                  ) : (
+                    'Ask AI for Boundaries'
+                  )}
+                </button>
                 <button
                   onClick={() => {
-                    setSelectedTemplate(null);
-                    setBuildingPosition(null);
-                    setBuildingRotation(0);
+                    setExternalDrawingMode(null);
+                    setBoundaryPath([]);
+                    setCornerMarkers([]);
+                    setMeasurements({ distance: null, area: null });
+                    setBoundaryFromAI(false);
+                    setShowDesigns(false);
                   }}
-                  className="px-4 py-2 bg-red-500 text-white rounded-lg shadow-md hover:bg-red-600"
+                  className="px-4 py-2 rounded-lg shadow-md text-sm font-medium bg-white text-gray-700 hover:bg-red-50"
                 >
-                  Clear Template
+                  Clear Drawing
                 </button>
-              )}
-            </div>
-
-            {showDesigns && (
-              <>
-                <div className="bg-white p-2 rounded-lg shadow-md max-h-[60vh] overflow-y-auto">
-                  <h3 className="font-medium mb-2">Building Templates</h3>
-                  {Object.entries(TEMPLATE_CATEGORIES).map(([category, templates]) => (
-                    <div key={category} className="mb-4">
-                      <h4 className="text-sm font-medium text-gray-600 mb-2">{category}</h4>
-                      <div className="grid grid-cols-2 gap-2">
-                        {templates.map((template) => (
-                          <button
-                            key={template.name}
-                            onClick={() => {
-                              setSelectedTemplate(template);
-                              setBuildingPosition(location);
-                            }}
-                            className={`px-3 py-2 rounded text-sm ${
-                              selectedTemplate?.name === template.name 
-                              ? 'bg-blue-100 border-2 border-blue-500' 
-                              : 'bg-gray-50 hover:bg-gray-100 border border-gray-200'
-                            }`}
-                          >
-                            {template.name}
-                          </button>
-                        ))}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => setIsBoundaryLocked(false)}
+                  className="px-4 py-2 bg-yellow-500 text-white rounded-lg shadow-md hover:bg-yellow-600"
+                >
+                  Edit Boundary
+                </button>
+                {/* Only show area and Build Templates after OpenAI analysis */}
+                {boundaryFromAI && measurements.area && (
+                  <div className="flex flex-col gap-2 mt-2">
+                    <div className="px-4 py-2 bg-white rounded-lg shadow-md text-gray-700">
+                      Area: {Math.round(measurements.area)} sq ft
+                    </div>
+                    <button
+                      onClick={() => setShowDesigns(!showDesigns)}
+                      className="px-3 py-1.5 bg-blue-500 text-white text-sm rounded-lg shadow-md hover:bg-blue-600"
+                    >
+                      {showDesigns ? 'Hide Templates' : 'Build Templates'}
+                    </button>
+                    {selectedStructure && (
+                      <div className="px-4 py-2 bg-white rounded-lg shadow-md text-gray-700">
+                        Structure: {calculateBuildingArea(selectedStructure.points || calculateBuildingPolygon(selectedStructure.position, selectedStructure.template))} sq ft
                       </div>
-                    </div>
-                  ))}
-                </div>
-
-                {selectedTemplate && (
-                  <div className="bg-white p-2 rounded-lg shadow-md">
-                    <div className="flex justify-between items-center mb-2">
-                      <h3 className="font-medium">Rotate Building</h3>
-                      <button
-                        onClick={() => {
-                          setSelectedTemplate(null);
-                          setBuildingPosition(null);
-                          setBuildingRotation(0);
-                        }}
-                        className="px-2 py-1 bg-red-500 text-white text-sm rounded hover:bg-red-600"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => handleRotateBuilding(-90)}
-                        className="px-3 py-2 bg-gray-100 rounded hover:bg-gray-200"
-                      >
-                        ↶ 90°
-                      </button>
-                      <button
-                        onClick={() => handleRotateBuilding(90)}
-                        className="px-3 py-2 bg-gray-100 rounded hover:bg-gray-200"
-                      >
-                        ↷ 90°
-                      </button>
-                      <button
-                        onClick={() => handleRotateBuilding(-45)}
-                        className="px-3 py-2 bg-gray-100 rounded hover:bg-gray-200"
-                      >
-                        ↶ 45°
-                      </button>
-                      <button
-                        onClick={() => handleRotateBuilding(45)}
-                        className="px-3 py-2 bg-gray-100 rounded hover:bg-gray-200"
-                      >
-                        ↷ 45°
-                      </button>
-                    </div>
+                    )}
                   </div>
                 )}
-              </>
-            )}
-          </div>
-        )}
-        <button
-          onClick={() => setDrawingMode('polygon')}
-          className={`px-4 py-2 rounded-lg shadow-md text-sm font-medium transition-colors ${
-            drawingMode === 'polygon'
-              ? 'bg-blue-600 text-white'
-              : 'bg-white text-gray-700 hover:bg-blue-50'
-          }`}
-        >
-          Draw Boundary
-        </button>
-        <button
-          onClick={() => {
-            setDrawingMode(null);
-          }}
-          className="px-4 py-2 rounded-lg shadow-md text-sm font-medium bg-white text-gray-700 hover:bg-red-50"
-        >
-          Clear Drawing
-        </button>
-        {measurements.area && (
-          <div className="px-4 py-2 rounded-lg shadow-md text-sm font-medium bg-white text-gray-700">
-            Area: {Math.round(measurements.area)} sq ft
-          </div>
-        )}
-      </div>
+              </div>
+            )
+          ) : (
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={handleOpenAIQuery}
+                disabled={isAnalyzing}
+                className={`px-4 py-2 bg-purple-500 text-white rounded-lg shadow-md ${
+                  isAnalyzing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-purple-600'
+                }`}
+              >
+                {isAnalyzing ? (
+                  <div className="flex items-center gap-2">
+                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Analyzing...
+                  </div>
+                ) : (
+                  'Ask AI for Boundaries'
+                )}
+              </button>
+            </div>
+          )}
+        </div>
 
-      <GoogleMap
-        mapContainerStyle={mapContainerStyle}
-        options={defaultMapOptions}
-        onLoad={onLoad}
-        onUnmount={onUnmount}
-      >
-        {selectedTemplate && buildingPosition && (
-          <Polygon
-            paths={calculateBuildingPolygon(buildingPosition, selectedTemplate, buildingRotation)}
-            options={{
-              strokeColor: '#2E7D32',  // Darker green stroke
-              strokeOpacity: 0.8,
-              strokeWeight: 2,
-              fillColor: '#4CAF50',    // Green fill
-              fillOpacity: 0.35,
-              draggable: true,
-              zIndex: 2  // Above boundary
+        {/* Template Selection Modal */}
+        {showDesigns && boundaryFromAI && (
+          <div className="absolute right-0 top-0 z-20 w-96 bg-white rounded-lg shadow-xl m-4 overflow-auto max-h-[calc(100vh-2rem)]">
+            <div className="p-4 border-b border-gray-200 sticky top-0 bg-white">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Building Templates</h3>
+                <button
+                  onClick={() => setShowDesigns(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="p-4">
+              <StructureTemplates
+                onTemplateSelect={(template) => {
+                  if (externalMap) {
+                    const center = {
+                      lat: (cornerMarkers[0].lat + cornerMarkers[2].lat) / 2,
+                      lng: (cornerMarkers[0].lng + cornerMarkers[2].lng) / 2
+                    };
+                    setSelectedStructure({
+                      template,
+                      position: center
+                    });
+                    setShowDesigns(false);
+                  }
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        <GoogleMap
+          mapContainerStyle={mapContainerStyle}
+          options={defaultMapOptions}
+          onLoad={onLoad}
+          onUnmount={onUnmount}
+        >
+          {/* Fixed center marker */}
+          {location && (
+            <Marker
+              position={location}
+              draggable={false}
+            />
+          )}
+          
+          {/* Selected Building Template */}
+          {selectedStructure && (
+            <Polygon
+              onLoad={onPolygonLoad}
+              paths={selectedStructure.points || calculateBuildingPolygon(selectedStructure.position, selectedStructure.template)}
+              options={{
+                fillColor: '#34D399',
+                fillOpacity: 0.4,
+                strokeColor: '#059669',
+                strokeOpacity: 1,
+                strokeWeight: 2,
+                zIndex: 1,
+                editable: true
+              }}
+              draggable={true}
+              onDragEnd={(e) => {
+                if (e.latLng && selectedStructure) {
+                  // Update position and maintain shape
+                  const oldCenter = selectedStructure.position;
+                  const newCenter = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+                  const dx = newCenter.lng - oldCenter.lng;
+                  const dy = newCenter.lat - oldCenter.lat;
+                  
+                  const newPoints = selectedStructure.points?.map(p => ({
+                    lat: p.lat + dy,
+                    lng: p.lng + dx
+                  }));
+
+                  setSelectedStructure({
+                    ...selectedStructure,
+                    position: newCenter,
+                    points: newPoints
+                  });
+                }
+              }}
+              onMouseUp={(e) => {
+                if (selectedStructure && structurePolygonRef.current) {
+                  const path = structurePolygonRef.current.getPath();
+                  if (path) {
+                    const points = Array.from({length: path.getLength()}, (_, i) => {
+                      const point = path.getAt(i);
+                      return { lat: point.lat(), lng: point.lng() };
+                    });
+                    
+                    // Calculate center
+                    const bounds = new google.maps.LatLngBounds();
+                    points.forEach(point => bounds.extend(point));
+                    const center = bounds.getCenter();
+                    
+                    setSelectedStructure({
+                      ...selectedStructure,
+                      position: { lat: center.lat(), lng: center.lng() },
+                      points: points
+                    });
+                  }
+                }
+              }}
+            />
+          )}
+          
+          {/* Draw boundary path */}
+          {boundaryPath.length > 2 && (
+            <Polygon
+              paths={boundaryPath}
+              options={{
+                strokeColor: '#2196F3',  // Light blue stroke
+                strokeOpacity: 0.8,
+                strokeWeight: 2,
+                fillColor: '#90CAF9',    // Lighter blue fill
+                fillOpacity: 0.35,
+                editable: !isBoundaryLocked,
+                draggable: true,
+                zIndex: 0  // Below buildings
+              }}
+              onDragEnd={(e) => {
+                if (!e.latLng) return;
+                // Calculate offset
+                const oldCenter = {
+                  lat: (cornerMarkers[0].lat + cornerMarkers[2].lat) / 2,
+                  lng: (cornerMarkers[0].lng + cornerMarkers[2].lng) / 2
+                };
+                const newCenter = e.latLng.toJSON();
+                const latDiff = newCenter.lat - oldCenter.lat;
+                const lngDiff = newCenter.lng - oldCenter.lng;
+                
+                // Move all markers by the offset
+                const newMarkers = cornerMarkers.map(marker => ({
+                  lat: marker.lat + latDiff,
+                  lng: marker.lng + lngDiff
+                }));
+                setCornerMarkers(newMarkers);
+                setBoundaryPath([...newMarkers, newMarkers[0]]);
+              }}
+            />
+          )}
+          
+          {/* Draw corner markers */}
+          {cornerMarkers.map((position, index) => (
+            <Marker
+              key={index}
+              position={position}
+              draggable={true}
+              options={{
+                icon: {
+                  path: google.maps.SymbolPath.CIRCLE,
+                  scale: 4,
+                  fillColor: '#2196F3',
+                  fillOpacity: 1,
+                  strokeColor: '#fff',
+                  strokeWeight: 1
+                }
+              }}
+              onDragEnd={(e) => {
+                if (e.latLng) {
+                  handleMarkerDrag(index, e.latLng);
+                }
+              }}
+              label={['NW', 'NE', 'SE', 'SW'][index]}
+            />
+          ))}
+          
+          <DrawingTools
+            map={externalMap}
+            drawingMode={externalDrawingMode}
+            onBoundaryComplete={(path) => {
+              // Only take the first 4 points for markers
+              setCornerMarkers(path.slice(0, 4));
+              setBoundaryPath([...path.slice(0, 4), path[0]]); // Close the polygon
+              setExternalDrawingMode(null);
             }}
-            onDragEnd={(e) => handleBuildingDrag(e.latLng!)}
+            onMeasurementUpdate={setMeasurements}
           />
-        )}
-
-        <Polygon
-          paths={boundaryPath}
-          options={{
-            strokeColor: '#2196F3',  // Light blue stroke
-            strokeOpacity: 0.8,
-            strokeWeight: 2,
-            fillColor: '#90CAF9',    // Lighter blue fill
-            fillOpacity: 0.35,
-            editable: false,
-            draggable: false,
-            zIndex: 1  // Below buildings
-          }}
-        />
-        
-        {cornerMarkers.map((position, index) => (
-          <Marker
-            key={index}
-            position={position}
-            label={{ text: ['NW', 'NE', 'SE', 'SW'][index], color: 'white' }}
-            draggable={true}
-            onDragEnd={(e) => handleMarkerDrag(index, e.latLng!)}
-            title={`${['NW', 'NE', 'SE', 'SW'][index]} Corner`}
-            zIndex={3}  // Above everything
-          />
-        ))}
-        
-        <Marker
-          position={location}
-          title="Property Location"
-        />
-        
-        <DrawingTools
-          map={map}
-          drawingMode={drawingMode}
-          onBoundaryComplete={() => {}}
-          onMeasurementUpdate={setMeasurements}
-        />
-      </GoogleMap>
-
-      {/* Drawing Instructions */}
-      <DrawingInstructions isVisible={true} />
+        </GoogleMap>
+      </div>
     </div>
   );
-};
-
-// Helper function to calculate building polygon points based on position, size, and rotation
-const calculateBuildingPolygon = (
-  center: google.maps.LatLngLiteral,
-  template: BuildingTemplate,
-  rotation: number
-): google.maps.LatLngLiteral[] => {
-  // Convert feet to approximate latitude/longitude deltas
-  const feetToLatLng = 0.00000274; // rough approximation
-  const width = template.width * feetToLatLng;
-  const length = template.length * feetToLatLng;
-
-  // Calculate corners before rotation
-  const points = [
-    { lat: center.lat - width/2, lng: center.lng - length/2 },
-    { lat: center.lat - width/2, lng: center.lng + length/2 },
-    { lat: center.lat + width/2, lng: center.lng + length/2 },
-    { lat: center.lat + width/2, lng: center.lng - length/2 }
-  ];
-
-  // Rotate points around center
-  const rotatedPoints = points.map(point => {
-    const dx = point.lng - center.lng;
-    const dy = point.lat - center.lat;
-    const theta = (rotation * Math.PI) / 180;
-    const cos = Math.cos(theta);
-    const sin = Math.sin(theta);
-    
-    return {
-      lat: center.lat + (dy * cos - dx * sin),
-      lng: center.lng + (dx * cos + dy * sin)
-    };
-  });
-
-  // Close the polygon
-  return [...rotatedPoints, rotatedPoints[0]];
 };
 
 export default PropertyMap;

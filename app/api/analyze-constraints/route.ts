@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
-
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error('Missing OPENAI_API_KEY environment variable');
-}
+import { constraintAnalysisPrompt } from '@/lib/ConstraintAnalysis';
+import type { ConstraintAnalysisRequest } from '@/lib/ConstraintAnalysis';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -12,69 +10,20 @@ const openai = new OpenAI({
 
 export async function POST(request: NextRequest) {
   try {
-    const { imageUrl, prompt, center, bounds, zoom, type = 'constraints' } = await request.json();
+    const { image, prompt, propertyCenter, zoomLevel }: ConstraintAnalysisRequest = await request.json();
 
-    if (!imageUrl) {
+    if (!image) {
       return NextResponse.json(
-        { error: 'Image URL is required' },
+        { error: 'Image is required' },
         { status: 400 }
       );
     }
 
-    let finalPrompt;
-    if (type === 'property') {
-      finalPrompt = `Analyze this satellite image and identify the 4 corners of the main property boundary.
-      The image is centered at ${center.lat}, ${center.lng} with zoom level ${zoom}.
-      The visible bounds are:
-      North: ${bounds.north}
-      South: ${bounds.south}
-      East: ${bounds.east}
-      West: ${bounds.west}
-
-      Return ONLY the coordinates in this exact JSON format:
-      {
-        "corners": [
-          {"lat": number, "lng": number},  // NW corner
-          {"lat": number, "lng": number},  // NE corner
-          {"lat": number, "lng": number},  // SE corner
-          {"lat": number, "lng": number}   // SW corner
-        ]
-      }`;
-    } else {
-      // Append our format to the client's prompt
-      const formatPrompt = ` Return the response in this exact format:
-{
-  "property_boundaries": [{
-    "boundary_id": 1,
-    "coordinates": [
-      {"lat": number, "lng": number},  // top-left
-      {"lat": number, "lng": number},  // top-right
-      {"lat": number, "lng": number},  // bottom-right
-      {"lat": number, "lng": number}   // bottom-left
-    ]
-  }],
-  "structures": [{
-    "structure_id": number,
-    "type": "residential" | "pool" | "garage" | "shed",
-    "coordinates": [
-      {"lat": number, "lng": number},  // top-left
-      {"lat": number, "lng": number},  // top-right
-      {"lat": number, "lng": number},  // bottom-right
-      {"lat": number, "lng": number}   // bottom-left
-    ]
-  }]
-}`;
-
-      finalPrompt = prompt + formatPrompt;
-    }
-
-    console.log('Client prompt:', prompt);
-    console.log('Final combined prompt:', finalPrompt);
-
-    console.log('Making OpenAI API call...');
+    // Combine the user's prompt with our format requirements
+    const finalPrompt = `${prompt}\n\n${constraintAnalysisPrompt}\n\nThe image is centered at ${propertyCenter.lat}, ${propertyCenter.lng} with zoom level ${zoomLevel}.`;
 
     const response = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4-vision-preview",
+      model: process.env.OPENAI_MODEL!,
       messages: [
         {
           role: "user",
@@ -86,84 +35,48 @@ export async function POST(request: NextRequest) {
             {
               type: "image_url",
               image_url: {
-                url: imageUrl
+                url: image,
+                detail: "high"
               }
             }
           ]
         }
       ],
-      max_tokens: type === 'property' ? 4096 : 1500,
-      temperature: type === 'property' ? undefined : 0.2,
-      response_format: type === 'property' ? undefined : { type: "json_object" }
+      max_tokens: 4096,
+      temperature: 0.2,
+      response_format: { type: "json_object" }
     });
 
-    // Get the response content
-    const content = response.choices[0]?.message?.content;
-    console.log('OpenAI Response Content:', content);
-
+    const content = response.choices[0].message.content;
     if (!content) {
-      console.error('No content in OpenAI response');
-      return NextResponse.json({ error: "No analysis generated" }, { status: 500 });
+      console.error('No content in response');
+      throw new Error('No content in response');
     }
+
+    console.log('OpenAI Response:', content);
 
     try {
-      // Try to parse the content as JSON, removing any markdown formatting
-      console.log('Attempting to clean and parse content...');
-      let cleanContent;
-      if (type === 'property') {
-        cleanContent = content;
-      } else {
-        cleanContent = content.replace(/^```json\n|\n```$/g, '');
+      // First try direct JSON parse
+      const parsed = JSON.parse(content);
+      return NextResponse.json({ parsed });
+    } catch (parseError) {
+      // If direct parse fails, try to extract JSON
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.error('Response content:', content);
+        throw new Error('No JSON found in response');
       }
-      console.log('Cleaned content:', cleanContent);
-      
-      let rawData;
-      if (type === 'property') {
-        rawData = JSON.parse(cleanContent);
-      } else {
-        rawData = JSON.parse(cleanContent);
-      }
-      console.log('Successfully parsed JSON. Transforming structure...');
-
-      // Transform the data to match our expected format
-      let transformedData;
-      if (type === 'property') {
-        transformedData = rawData;
-      } else {
-        transformedData = {
-          property_boundaries: [{
-            boundary_id: 1,
-            coordinates: rawData.propertyBoundary.coordinates
-          }],
-          structures: rawData.structures.map((structure: any, index: number) => ({
-            structure_id: index + 1,
-            type: structure.type,
-            coordinates: structure.coordinates
-          }))
-        };
-      }
-
-      console.log('Transformed data:', transformedData);
-
-      // Return both raw and processed data
-      return NextResponse.json(
-        type === 'property' 
-          ? rawData
-          : { raw: content, processed: transformedData }
-      );
-    } catch (error) {
-      console.error("Error parsing analysis:", error);
-      return NextResponse.json({ error: "Invalid analysis format" }, { status: 500 });
+      const parsed = JSON.parse(jsonMatch[0]);
+      return NextResponse.json({ parsed });
     }
-  } catch (error: any) {
-    console.error('Vision analysis error:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name,
-      cause: error.cause
-    });
+
+  } catch (error) {
+    console.error('Error analyzing constraints:', error);
+    if (error instanceof Error) {
+      console.error('Error details:', error.message);
+    }
     return NextResponse.json(
-      { error: error.message || 'Vision analysis failed' },
+      { error: 'Failed to analyze constraints', details: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
     );
   }

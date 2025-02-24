@@ -88,6 +88,8 @@ const ConstraintLayer: FC<ConstraintLayerProps> = ({ map, constraintAnalysis, on
   };
 
   useEffect(() => {
+    console.log('ConstraintLayer received:', { map, constraintAnalysis });
+    
     // Clear existing polygons
     constraints.current.forEach(constraint => {
       constraint.polygon.setMap(null);
@@ -97,6 +99,7 @@ const ConstraintLayer: FC<ConstraintLayerProps> = ({ map, constraintAnalysis, on
     try {
       // Create property boundary
       if (constraintAnalysis.property_boundaries?.[0]) {
+        console.log('Creating property boundary with coords:', constraintAnalysis.property_boundaries[0].coordinates);
         const propertyCoords = constraintAnalysis.property_boundaries[0].coordinates;
         const propertyConstraint = createPolygon(propertyCoords, 'property');
         if (propertyConstraint) {
@@ -128,6 +131,7 @@ const ConstraintLayer: FC<ConstraintLayerProps> = ({ map, constraintAnalysis, on
 
       const buildableArea = Math.max(0, propertyArea - structureAreas);
       
+      console.log('Final area calculation:', propertyArea);
       console.log('Area calculations:', {
         propertyArea: propertyArea.toFixed(2),
         structureAreas: structureAreas.toFixed(2),

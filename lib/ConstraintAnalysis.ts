@@ -91,12 +91,18 @@ Important:
 Analyze the image and provide the coordinates and measurements in this JSON format.`;
 
 export async function analyzeConstraints(request: ConstraintAnalysisRequest): Promise<ConstraintAnalysisResult> {
-  const response = await fetch('/api/analyze-constraints', {
+  const response = await fetch('/api/vision/analyze', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(request),
+    body: JSON.stringify({
+      image: request.image,
+      prompt: request.prompt,
+      propertyCenter: request.propertyCenter,
+      zoomLevel: request.zoomLevel,
+      type: 'constraints'
+    }),
   });
 
   if (!response.ok) {
@@ -104,5 +110,5 @@ export async function analyzeConstraints(request: ConstraintAnalysisRequest): Pr
   }
 
   const data = await response.json();
-  return data.parsed;
+  return data.processed;
 }

@@ -5,8 +5,6 @@ import { Wrapper } from '@googlemaps/react-wrapper';
 import PropertyMap from '@/components/property/PropertyMap';
 import type { PropertyMapInstance } from '@/components/property/PropertyMap';
 import ConstraintLayer from '@/components/map/layers/ConstraintLayer';
-import { analyzeConstraints } from '@/lib/ConstraintAnalysis';
-import type { ConstraintAnalysisResult } from '@/lib/ConstraintAnalysis';
 import html2canvas from 'html2canvas';
 
 // Pre-defined location for testing
@@ -21,7 +19,7 @@ const TestCapturePage = () => {
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [drawingMode, setDrawingMode] = useState<'polygon' | null>(null);
   const [isDrawingActive, setIsDrawingActive] = useState(false);
-  const [constraintAnalysis, setConstraintAnalysis] = useState<ConstraintAnalysisResult | null>(null);
+  const [constraintAnalysis, setConstraintAnalysis] = useState<any | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showConstraints, setShowConstraints] = useState(false);
@@ -34,6 +32,7 @@ const TestCapturePage = () => {
 
   const handleAnalyze = async (map: google.maps.Map, propertyMap: PropertyMapInstance) => {
     setIsAnalyzing(true);
+    setError(null);
     try {
       const bounds = map.getBounds();
       if (!bounds) {
@@ -48,17 +47,30 @@ const TestCapturePage = () => {
         scale: 2,
       });
 
-      const analysis = await analyzeConstraints({
-        image: canvas.toDataURL('image/jpeg', 0.9),
-        prompt: 'Analyze this property for ADU placement constraints',
-        propertyCenter: TEST_LOCATION,
-        zoomLevel: map.getZoom() || 19
+      const response = await fetch('/api/vision/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: canvas.toDataURL('image/jpeg', 0.9),
+          prompt: 'Analyze this property for ADU placement constraints',
+          propertyCenter: TEST_LOCATION,
+          zoomLevel: map.getZoom() || 19,
+          type: 'constraints'
+        }),
       });
 
-      setConstraintAnalysis(analysis);
+      if (!response.ok) {
+        throw new Error('Failed to analyze property');
+      }
+
+      const data = await response.json();
+      setConstraintAnalysis(data.processed);
       setShowConstraints(true);
     } catch (error) {
       console.error('Analysis failed:', error);
+      setError(error instanceof Error ? error.message : 'Failed to analyze property');
     } finally {
       setIsAnalyzing(false);
     }
@@ -99,6 +111,7 @@ const TestCapturePage = () => {
                   setDrawingMode={setDrawingMode}
                   setIsDrawingActive={setIsDrawingActive}
                   onAnalyze={handleAnalyze}
+                  onDetectBoundaries={async () => null}
                 />
                 {showConstraints && constraintAnalysis && map && (
                   <ConstraintLayer
@@ -107,7 +120,7 @@ const TestCapturePage = () => {
                       property_boundaries: [{
                         coordinates: constraintAnalysis.propertyBoundary.coordinates
                       }],
-                      structures: constraintAnalysis.structures.map(structure => ({
+                      structures: constraintAnalysis.structures.map((structure: { type: string; coordinates: google.maps.LatLngLiteral[] }) => ({
                         type: structure.type,
                         coordinates: structure.coordinates
                       }))

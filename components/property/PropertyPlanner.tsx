@@ -59,6 +59,7 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
 
   const analyzePropertyWithVision = useCallback(async (map: google.maps.Map, propertyMap: PropertyMapInstance) => {
     setIsAnalyzing(true);
+    setAnalysisError(null);
     try {
       const bounds = map.getBounds();
       if (!bounds) {
@@ -73,23 +74,86 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
         scale: 2,
       });
 
-      const analysis = await analyzeConstraints({
-        image: canvas.toDataURL('image/jpeg', 0.9),
-        prompt: 'Analyze this satellite image for property constraints',
-        propertyCenter: location,
-        zoomLevel: map.getZoom() || 19
+      const response = await fetch('/api/vision/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: canvas.toDataURL('image/jpeg', 0.9),
+          prompt: 'Analyze this satellite image for property constraints',
+          propertyCenter: location,
+          zoomLevel: map.getZoom() || 19,
+          type: 'general'
+        }),
       });
 
-      setAnalysis(analysis);
+      if (!response.ok) {
+        throw new Error('Failed to analyze property');
+      }
+
+      const data = await response.json();
+      setVisionAnalysis(data);
       setShowAnalysis(true);
-      setIsAnalyzing(false);
     } catch (error) {
       console.error('Error analyzing property:', error);
       setAnalysisError(error instanceof Error ? error.message : 'Failed to analyze property');
     } finally {
       setIsAnalyzing(false);
     }
-  }, [address, location]);
+  }, [location]);
+
+  const detectBoundaries = useCallback(async (map: google.maps.Map) => {
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+    try {
+      const bounds = map.getBounds();
+      if (!bounds) {
+        throw new Error('Map bounds not available');
+      }
+
+      // Get the current map view as an image
+      const mapDiv = map.getDiv();
+      const canvas = await html2canvas(mapDiv, {
+        useCORS: true,
+        allowTaint: true,
+        scale: 2,
+      });
+
+      const response = await fetch('/api/vision/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: canvas.toDataURL('image/jpeg', 0.9),
+          prompt: 'Analyze this satellite image to detect property boundaries. Return the coordinates of the main property boundary.',
+          propertyCenter: location,
+          zoomLevel: map.getZoom() || 19,
+          type: 'constraints'
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to analyze property boundaries');
+      }
+
+      const data = await response.json();
+      
+      // Return the boundary coordinates
+      if (data.processed?.propertyBoundary?.coordinates) {
+        return data.processed.propertyBoundary.coordinates;
+      } else {
+        throw new Error('No property boundaries detected in the image');
+      }
+    } catch (error) {
+      console.error('Analysis error:', error);
+      setAnalysisError(error instanceof Error ? error.message : 'Failed to detect boundaries');
+      return null;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [location]);
 
   return (
     <div className="container mx-auto p-4">
@@ -165,6 +229,7 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
             setDrawingMode={setDrawingMode}
             setIsDrawingActive={setIsDrawingActive}
             onAnalyze={analyzePropertyWithVision}
+            onDetectBoundaries={detectBoundaries}
           />
         </div>
 

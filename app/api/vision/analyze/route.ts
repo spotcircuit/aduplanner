@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import { constraintAnalysisPrompt } from '@/lib/ConstraintAnalysis';
+import type { ConstraintAnalysisRequest } from '@/lib/ConstraintAnalysis';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -8,24 +10,22 @@ const openai = new OpenAI({
 
 export async function POST(request: NextRequest) {
   try {
-    const { imageUrl } = await request.json();
+    const { imageUrl, image, prompt, propertyCenter, zoomLevel, type = 'general' }: ConstraintAnalysisRequest & { imageUrl?: string; type?: string } = await request.json();
 
-    if (!imageUrl) {
+    // Support both imageUrl and image (data URL) formats
+    const finalImageUrl = imageUrl || image;
+    if (!finalImageUrl) {
       return NextResponse.json(
-        { error: 'Image URL is required' },
+        { error: 'Image URL or data URL is required' },
         { status: 400 }
       );
     }
 
-    const response = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4-vision-preview",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Analyze this satellite image and identify features that would impact ADU construction that aren't visible in standard mapping data. Focus on qualitative assessment and visual identification:
+    let finalPrompt;
+    if (type === 'constraints') {
+      finalPrompt = `${prompt || 'Analyze this property for ADU placement constraints'}\n\n${constraintAnalysisPrompt}\n\nThe image is centered at ${propertyCenter.lat}, ${propertyCenter.lng} with zoom level ${zoomLevel}.`;
+    } else {
+      finalPrompt = `Analyze this satellite image and identify features that would impact ADU construction that aren't visible in standard mapping data. Focus on qualitative assessment and visual identification:
 
 1. Existing Structures:
    - Identify and classify all structures (house, garage, shed, pool, etc.)
@@ -103,45 +103,178 @@ Return ONLY the JSON with no markdown formatting or backticks. The response must
     ],
     "generalNotes": string[]
   }
-}`
+}`;
+    }
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL!,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: finalPrompt
             },
             {
               type: "image_url",
               image_url: {
-                url: imageUrl
+                url: finalImageUrl,
+                detail: "high"
               }
             }
           ]
         }
       ],
-      max_tokens: 1500,
+      max_tokens: type === 'constraints' ? 4096 : 1500,
+      temperature: 0.2,
+      response_format: { type: "json_object" }
     });
 
-    // Get the response content
     const content = response.choices[0]?.message?.content;
     if (!content) {
       return NextResponse.json({ error: "No analysis generated" }, { status: 500 });
     }
 
     try {
-      // Try to parse the content as JSON, removing any markdown formatting
-      const cleanContent = content.replace(/^```json\n|\n```$/g, '');
-      const analysisData = JSON.parse(cleanContent);
+      // First try direct JSON parse
+      const parsed = JSON.parse(content);
+      
+      // Process the response based on type
+      const processed = {
+        propertyBoundary: parsed.property_boundary || parsed.propertyBoundary,
+        structures: parsed.structures || [],
+        setbacks: parsed.setbacks || [],
+        buildableAreas: parsed.buildable_areas || parsed.buildableAreas || []
+      };
 
-      // Validate the structure
-      if (!analysisData.structures || !analysisData.setbacks || !analysisData.buildableAreas) {
-        throw new Error("Invalid analysis structure");
+      if (type === 'constraints') {
+        // Transform constraint analysis into vision analysis format
+        const transformed = {
+          structures: processed.structures.map((s: any) => ({
+            type: s.type,
+            condition: 'good', // Default since constraints don't specify condition
+            location: `Located at coordinates (${s.coordinates[0].lat}, ${s.coordinates[0].lng})`,
+            notes: []
+          })),
+          setbacks: {
+            front: processed.setbacks.front,
+            back: processed.setbacks.back,
+            left: processed.setbacks.left,
+            right: processed.setbacks.right,
+            notes: []
+          },
+          buildableAreas: processed.buildableAreas.map((b: any) => ({
+            location: `Area at coordinates (${b.coordinates[0].lat}, ${b.coordinates[0].lng})`,
+            suitability: b.suitability,
+            estimatedSize: 'TBD', // We could calculate this from coordinates
+            advantages: [],
+            challenges: b.notes
+          })),
+          terrain: {
+            description: 'Analysis focused on property boundaries and setbacks',
+            concerns: [],
+            opportunities: []
+          },
+          access: {
+            bestRoutes: [],
+            privacyFeatures: [],
+            challenges: []
+          },
+          constructionSuitability: {
+            bestLocations: processed.buildableAreas.map((b: any) => ({
+              location: `Area at coordinates (${b.coordinates[0].lat}, ${b.coordinates[0].lng})`,
+              rating: b.suitability,
+              reasons: b.notes
+            })),
+            generalNotes: []
+          }
+        };
+
+        return NextResponse.json({
+          raw: content,
+          processed: transformed
+        });
       }
 
-      // Return both raw and processed data
+      // Return general analysis as is
       return NextResponse.json({
         raw: content,
-        processed: analysisData
+        processed: parsed
       });
-    } catch (error) {
-      console.error("Error parsing analysis:", error);
-      return NextResponse.json({ error: "Invalid analysis format" }, { status: 500 });
+    } catch (parseError) {
+      // If direct parse fails, try to extract JSON
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.error('Response content:', content);
+        throw new Error('No JSON found in response');
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      
+      // Process the response based on type
+      const processed = {
+        propertyBoundary: parsed.property_boundary || parsed.propertyBoundary,
+        structures: parsed.structures || [],
+        setbacks: parsed.setbacks || [],
+        buildableAreas: parsed.buildable_areas || parsed.buildableAreas || []
+      };
+
+      if (type === 'constraints') {
+        // Transform constraint analysis into vision analysis format
+        const transformed = {
+          structures: processed.structures.map((s: any) => ({
+            type: s.type,
+            condition: 'good', // Default since constraints don't specify condition
+            location: `Located at coordinates (${s.coordinates[0].lat}, ${s.coordinates[0].lng})`,
+            notes: []
+          })),
+          setbacks: {
+            front: processed.setbacks.front,
+            back: processed.setbacks.back,
+            left: processed.setbacks.left,
+            right: processed.setbacks.right,
+            notes: []
+          },
+          buildableAreas: processed.buildableAreas.map((b: any) => ({
+            location: `Area at coordinates (${b.coordinates[0].lat}, ${b.coordinates[0].lng})`,
+            suitability: b.suitability,
+            estimatedSize: 'TBD', // We could calculate this from coordinates
+            advantages: [],
+            challenges: b.notes
+          })),
+          terrain: {
+            description: 'Analysis focused on property boundaries and setbacks',
+            concerns: [],
+            opportunities: []
+          },
+          access: {
+            bestRoutes: [],
+            privacyFeatures: [],
+            challenges: []
+          },
+          constructionSuitability: {
+            bestLocations: processed.buildableAreas.map((b: any) => ({
+              location: `Area at coordinates (${b.coordinates[0].lat}, ${b.coordinates[0].lng})`,
+              rating: b.suitability,
+              reasons: b.notes
+            })),
+            generalNotes: []
+          }
+        };
+
+        return NextResponse.json({
+          raw: content,
+          processed: transformed
+        });
+      }
+
+      // Return general analysis as is
+      return NextResponse.json({
+        raw: content,
+        processed: parsed
+      });
     }
+
   } catch (error: any) {
     console.error('Vision analysis error:', error);
     return NextResponse.json(

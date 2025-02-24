@@ -1,0 +1,818 @@
+From 2450ec84e4cec4c29c06ccf7ee814070ffccde13 Mon Sep 17 00:00:00 2001
+From: spotcircuit <info@spotcircuit.com>
+Date: Sat, 22 Feb 2025 14:28:14 -0500
+Subject: [PATCH] Add GPT-4 Vision integration for property analysis
+
+- Add vision analysis API endpoints
+- Add property type detection using satellite images
+- Add ADU placement validation
+- Update README with comprehensive documentation
+- Move OpenAI configuration to server-side
+---
+ .../aduplanner/aduplanner-next/README.md      | 135 ++++++++++++++
+ .../app/api/vision/analyze/route.ts           |  54 ++++++
+ .../app/api/vision/validate/route.ts          |  52 ++++++
+ .../aduplanner/aduplanner-next/app/page.tsx   |  19 +-
+ .../components/property/PropertyPlanner.tsx   | 170 ++++++++++++++++--
+ .../aduplanner-next/lib/propertyAnalysis.ts   | 158 +++++++++++++++-
+ .../aduplanner-next/lib/visionAnalysis.ts     |  90 ++++++++++
+ 7 files changed, 640 insertions(+), 38 deletions(-)
+ create mode 100644 CascadeProjects/aduplanner/aduplanner-next/README.md
+ create mode 100644 CascadeProjects/aduplanner/aduplanner-next/app/api/vision/analyze/route.ts
+ create mode 100644 CascadeProjects/aduplanner/aduplanner-next/app/api/vision/validate/route.ts
+ create mode 100644 CascadeProjects/aduplanner/aduplanner-next/lib/visionAnalysis.ts
+
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/README.md b/CascadeProjects/aduplanner/aduplanner-next/README.md
+new file mode 100644
+index 0000000..58f46f8
+--- /dev/null
++++ b/CascadeProjects/aduplanner/aduplanner-next/README.md
+@@ -0,0 +1,135 @@
++# ADU Planner
++
++A Next.js application for planning Accessory Dwelling Units (ADUs) using AI-powered property analysis.
++
++## Features
++
++### 1. Property Analysis
++- Automatic property type detection (single-family vs townhouse)
++- Buildable area identification
++- Setback calculation and visualization
++- Integration with Google Maps and Places API
++- AI-powered satellite image analysis using GPT-4 Vision
++
++### 2. ADU Planning Tools
++- Interactive property map with drawing tools
++- Real-time ADU placement validation
++- Setback visualization
++- Area measurements and calculations
++- Zoning compliance checks
++
++### 3. AI Features
++- GPT-4 Vision analysis for property type detection
++- Automated setback measurement
++- Real-time placement validation
++- Building code compliance checking
++
++## Tech Stack
++
++- **Frontend**: Next.js 14, React, TypeScript, Tailwind CSS
++- **Maps**: Google Maps JavaScript API, Places API
++- **AI**: OpenAI GPT-4 Vision API
++- **State Management**: React Context
++- **Styling**: Tailwind CSS, Heroicons
++
++## Getting Started
++
++### Prerequisites
++- Node.js 18+
++- npm or yarn
++- Google Maps API key
++- OpenAI API key
++
++### Environment Setup
++Create a `.env.local` file with:
++```env
++NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=your_google_maps_key
++OPENAI_API_KEY=your_openai_key
++OPENAI_ORGANIZATION_ID=your_org_id
++OPENAI_MODEL=gpt-40-mini
++```
++
++### Installation
++```bash
++# Install dependencies
++npm install
++
++# Run development server
++npm run dev
++```
++
++### Development Commands
++```bash
++# Run development server
++npm run dev
++
++# Build for production
++npm run build
++
++# Start production server
++npm start
++
++# Run tests
++npm test
++
++# Run linter
++npm run lint
++```
++
++## Project Structure
++
++```
++aduplanner-next/
++├── app/                    # Next.js app directory
++│   ├── api/               # API routes
++│   │   └── vision/       # Vision API endpoints
++│   └── page.tsx          # Main page
++├── components/            # React components
++│   ├── map/              # Map-related components
++│   └── property/         # Property planning components
++├── lib/                   # Shared utilities
++│   ├── propertyAnalysis.ts  # Property analysis logic
++│   └── visionAnalysis.ts    # Vision API integration
++├── public/               # Static assets
++└── types/                # TypeScript type definitions
++```
++
++## API Routes
++
++### Vision Analysis
++- `POST /api/vision/analyze`
++  - Analyzes property images for type detection
++  - Requires image URL in request body
++  - Returns property analysis results
++
++- `POST /api/vision/validate`
++  - Validates ADU placement
++  - Requires image URL and placement bounds
++  - Returns validation results and suggestions
++
++## Contributing
++
++1. Fork the repository
++2. Create a feature branch
++3. Commit your changes
++4. Push to the branch
++5. Create a Pull Request
++
++## Environment Variables
++
++Required environment variables:
++- `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`: Google Maps API key
++- `OPENAI_API_KEY`: OpenAI API key
++- `OPENAI_ORGANIZATION_ID`: OpenAI organization ID
++- `OPENAI_MODEL`: OpenAI model name (default: gpt-40-mini)
++
++## License
++
++MIT License - see LICENSE file for details
++
++## Acknowledgments
++
++- Built with Next.js
++- Uses Google Maps Platform
++- Powered by OpenAI's GPT-4 Vision
++- Inspired by the ADU-Planner RAG-a-thon 2024 project
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/app/api/vision/analyze/route.ts b/CascadeProjects/aduplanner/aduplanner-next/app/api/vision/analyze/route.ts
+new file mode 100644
+index 0000000..9c5b585
+--- /dev/null
++++ b/CascadeProjects/aduplanner/aduplanner-next/app/api/vision/analyze/route.ts
+@@ -0,0 +1,54 @@
++import { NextRequest, NextResponse } from 'next/server';
++import OpenAI from 'openai';
++
++const openai = new OpenAI({
++  apiKey: process.env.OPENAI_API_KEY,
++  organization: process.env.OPENAI_ORGANIZATION_ID,
++});
++
++export async function POST(request: NextRequest) {
++  try {
++    const { imageUrl } = await request.json();
++
++    if (!imageUrl) {
++      return NextResponse.json(
++        { error: 'Image URL is required' },
++        { status: 400 }
++      );
++    }
++
++    const response = await openai.chat.completions.create({
++      model: process.env.OPENAI_MODEL || "gpt-40-mini",
++      messages: [
++        {
++          role: "user",
++          content: [
++            {
++              type: "text",
++              text: `Analyze this satellite image of a property and provide:
++              1. Property type (single family or townhouse)
++              2. Buildable areas (front yard, back yard, side yards) and their estimated sizes
++              3. Setback distances from property lines
++              4. Existing structures and their locations
++              Provide measurements in feet when possible.
++              Format as JSON.`
++            },
++            {
++              type: "image_url",
++              image_url: imageUrl,
++            }
++          ]
++        }
++      ],
++      max_tokens: 1000,
++    });
++
++    return NextResponse.json(response.choices[0]?.message?.content || {});
++  } catch (error: any) {
++    console.error('Vision analysis error:', error);
++    return NextResponse.json(
++      { error: error.message || 'Vision analysis failed' },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/app/api/vision/validate/route.ts b/CascadeProjects/aduplanner/aduplanner-next/app/api/vision/validate/route.ts
+new file mode 100644
+index 0000000..89bd566
+--- /dev/null
++++ b/CascadeProjects/aduplanner/aduplanner-next/app/api/vision/validate/route.ts
+@@ -0,0 +1,52 @@
++import { NextRequest, NextResponse } from 'next/server';
++import OpenAI from 'openai';
++
++const openai = new OpenAI({
++  apiKey: process.env.OPENAI_API_KEY,
++  organization: process.env.OPENAI_ORGANIZATION_ID,
++});
++
++export async function POST(request: NextRequest) {
++  try {
++    const { imageUrl, bounds } = await request.json();
++
++    if (!imageUrl || !bounds) {
++      return NextResponse.json(
++        { error: 'Image URL and bounds are required' },
++        { status: 400 }
++      );
++    }
++
++    const response = await openai.chat.completions.create({
++      model: process.env.OPENAI_MODEL || "gpt-40-mini",
++      messages: [
++        {
++          role: "user",
++          content: [
++            {
++              type: "text",
++              text: `Given this property image with a proposed ADU placement (marked in red rectangle):
++              1. Is the placement valid according to typical setback requirements?
++              2. Are there any issues with the location?
++              3. What suggestions would you make for better placement?
++              Format response as JSON with isValid (boolean), reasons (string[]), and suggestions (string[]).`
++            },
++            {
++              type: "image_url",
++              image_url: imageUrl,
++            }
++          ]
++        }
++      ],
++      max_tokens: 1000,
++    });
++
++    return NextResponse.json(response.choices[0]?.message?.content || {});
++  } catch (error: any) {
++    console.error('Vision validation error:', error);
++    return NextResponse.json(
++      { error: error.message || 'Vision validation failed' },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/app/page.tsx b/CascadeProjects/aduplanner/aduplanner-next/app/page.tsx
+index 6c39799..8fb97b7 100644
+--- a/CascadeProjects/aduplanner/aduplanner-next/app/page.tsx
++++ b/CascadeProjects/aduplanner/aduplanner-next/app/page.tsx
+@@ -5,6 +5,7 @@ import { HomeModernIcon } from '@heroicons/react/24/outline';
+ import AddressAutocomplete from '@/components/property/AddressAutocomplete';
+ import dynamic from 'next/dynamic';
+ import type { LatLngLiteral } from '@googlemaps/google-maps-services-js';
++import { analyzePropertyByAddress } from '@/lib/propertyAnalysis';
+ 
+ // Import PropertyPlanner dynamically to avoid SSR issues
+ const PropertyPlanner = dynamic(() => import('@/components/property/PropertyPlanner'), {
+@@ -35,22 +36,8 @@ export default function Home() {
+     address: string,
+     placeDetails: google.maps.places.PlaceResult
+   ) => {
+-    const analysis = {
+-      isEligible: true,
+-      zoning: 'R-1 (Single Family Residential)',
+-      maxSize: 111.48, // 1200 sq ft
+-      restrictions: [
+-        'Maximum height: 16 feet (4.88m)',
+-        'Must maintain 4 feet (1.22m) side and rear setbacks',
+-        'Cannot be placed in front yard',
+-        'Must have separate entrance from main dwelling'
+-      ],
+-      disclaimers: [
+-        'This is a preliminary analysis only. Please consult with local planning authorities.',
+-        'Additional restrictions may apply based on specific lot conditions.',
+-        'Building permits and inspections required.'
+-      ]
+-    };
++    // Get the initial analysis using the place details
++    const analysis = await analyzePropertyByAddress(address, placeDetails);
+     setSelectedLocation({ location, address, placeDetails, analysis });
+   };
+ 
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/components/property/PropertyPlanner.tsx b/CascadeProjects/aduplanner/aduplanner-next/components/property/PropertyPlanner.tsx
+index d01b7bc..4295eaa 100644
+--- a/CascadeProjects/aduplanner/aduplanner-next/components/property/PropertyPlanner.tsx
++++ b/CascadeProjects/aduplanner/aduplanner-next/components/property/PropertyPlanner.tsx
+@@ -19,6 +19,7 @@ import {
+ } from '@heroicons/react/24/outline';
+ import DrawingTools from '../map/tools/DrawingTools';
+ import { analyzePropertyByAddress } from '@/lib/propertyAnalysis';
++import { validateADUPlacement } from '@/lib/visionAnalysis';
+ 
+ interface PropertyPlannerProps {
+   location: google.maps.LatLngLiteral;
+@@ -73,17 +74,24 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
+   const [visionAnalysis, setVisionAnalysis] = useState<string | null>(null);
+   const [isAnalyzing, setIsAnalyzing] = useState(false);
+   const [showInfo, setShowInfo] = useState(false);
+-  const [propertyAnalysis, setPropertyAnalysis] = useState<any>(null);
++  const [propertyAnalysis, setPropertyAnalysis] = useState(initialAnalysis);
+   const [isDrawingActive, setIsDrawingActive] = useState(false);
+   const [isDragging, setIsDragging] = useState(false);
++  const [visionFeedback, setVisionFeedback] = useState<{
++    isValid: boolean;
++    reasons: string[];
++    suggestions: string[];
++  } | null>(null);
+ 
+   useEffect(() => {
+     const analyze = async () => {
+-      const analysis = await analyzePropertyByAddress(address);
+-      setPropertyAnalysis(analysis);
++      if (placeDetails) {
++        const analysis = await analyzePropertyByAddress(address, placeDetails);
++        setPropertyAnalysis(analysis);
++      }
+     };
+     analyze();
+-  }, [address]);
++  }, [address, placeDetails]);
+ 
+   const onLoad = useCallback((map: google.maps.Map) => {
+     setMap(map);
+@@ -229,6 +237,23 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
+     setMeasurements(measurement);
+   }, []);
+ 
++  const handleADUPlacement = async (bounds: any) => {
++    if (placeDetails?.photos && placeDetails.photos.length > 0) {
++      try {
++        const photoUrl = placeDetails.photos[0].getUrl();
++        const feedback = await validateADUPlacement(photoUrl, {
++          x: bounds.x,
++          y: bounds.y,
++          width: bounds.width,
++          height: bounds.height
++        });
++        setVisionFeedback(feedback);
++      } catch (error) {
++        console.error('Vision validation failed:', error);
++      }
++    }
++  };
++
+   return (
+     <div className="container mx-auto p-4">
+       <div className="flex flex-col lg:flex-row gap-4">
+@@ -372,20 +397,82 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
+                     </p>
+                   </div>
+                 </div>
+-                <div className="flex items-start gap-2">
+-                  <ChevronRightIcon className="h-5 w-5 text-blue-500 mt-1" />
+-                  <div>
+-                    <p className="text-gray-700">
+-                      <span className="font-medium">Zoning:</span> {propertyAnalysis?.zoning || initialAnalysis.zoning}
+-                    </p>
++                
++                {!propertyAnalysis?.isEligible && propertyAnalysis?.ineligibilityReason && (
++                  <div className="flex items-start gap-2 bg-red-50 p-3 rounded-lg border border-red-100">
++                    <XMarkIcon className="h-5 w-5 text-red-500 mt-1 flex-shrink-0" />
++                    <div>
++                      <p className="text-red-700 font-medium">Not Eligible for ADU</p>
++                      <p className="text-red-600">{propertyAnalysis.ineligibilityReason}</p>
++                    </div>
++                  </div>
++                )}
++
++                {/* Property Characteristics */}
++                <div className="border-t border-blue-100 pt-3 mt-3">
++                  <h4 className="text-sm font-medium text-blue-700 mb-2">Property Characteristics</h4>
++                  <div className="grid grid-cols-2 gap-2">
++                    <div className="text-sm">
++                      <span className="text-gray-600">Type:</span>
++                      <span className="ml-1 text-gray-900">{placeDetails?.types?.includes('single_family_dwelling') ? 'Single Family' : 'Residential'}</span>
++                    </div>
++                    {measurements.area && (
++                      <div className="text-sm">
++                        <span className="text-gray-600">Lot Size:</span>
++                        <span className="ml-1 text-gray-900">{Math.round(measurements.area).toLocaleString()} sq ft</span>
++                      </div>
++                    )}
++                    <div className="text-sm">
++                      <span className="text-gray-600">Zoning:</span>
++                      <span className="ml-1 text-gray-900">{propertyAnalysis?.zoning}</span>
++                    </div>
++                    <div className="text-sm">
++                      <span className="text-gray-600">Max ADU:</span>
++                      <span className="ml-1 text-gray-900">{propertyAnalysis?.maxSize} sq ft</span>
++                    </div>
+                   </div>
+                 </div>
+-                <div className="flex items-start gap-2">
+-                  <ChevronRightIcon className="h-5 w-5 text-blue-500 mt-1" />
+-                  <div>
+-                    <p className="text-gray-700">
+-                      <span className="font-medium">Max ADU Size:</span> {propertyAnalysis?.maxSize || initialAnalysis.maxSize} sq ft
+-                    </p>
++
++                {/* Location Context */}
++                <div className="border-t border-blue-100 pt-3">
++                  <h4 className="text-sm font-medium text-blue-700 mb-2">Location Context</h4>
++                  <div className="space-y-1">
++                    {placeDetails?.address_components?.map((component, index) => {
++                      if (component.types.includes('neighborhood') || 
++                          component.types.includes('sublocality') ||
++                          component.types.includes('locality')) {
++                        return (
++                          <div key={index} className="text-sm">
++                            <span className="text-gray-600">{component.types[0].charAt(0).toUpperCase() + component.types[0].slice(1)}:</span>
++                            <span className="ml-1 text-gray-900">{component.long_name}</span>
++                          </div>
++                        );
++                      }
++                      return null;
++                    })}
++                  </div>
++                </div>
++
++                {/* Setback Requirements */}
++                <div className="border-t border-blue-100 pt-3">
++                  <h4 className="text-sm font-medium text-blue-700 mb-2">Setback Requirements</h4>
++                  <div className="grid grid-cols-2 gap-2">
++                    <div className="text-sm">
++                      <span className="text-gray-600">Front:</span>
++                      <span className="ml-1 text-gray-900">20 ft</span>
++                    </div>
++                    <div className="text-sm">
++                      <span className="text-gray-600">Back:</span>
++                      <span className="ml-1 text-gray-900">15 ft</span>
++                    </div>
++                    <div className="text-sm">
++                      <span className="text-gray-600">Sides:</span>
++                      <span className="ml-1 text-gray-900">5 ft</span>
++                    </div>
++                    <div className="text-sm">
++                      <span className="text-gray-600">Height Limit:</span>
++                      <span className="ml-1 text-gray-900">16 ft</span>
++                    </div>
+                   </div>
+                 </div>
+               </div>
+@@ -422,9 +509,60 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
+                 ))}
+               </div>
+             </div>
++
++            {/* Debug Information */}
++            <div className="border-t border-blue-100 pt-3 mt-3">
++              <h4 className="text-sm font-medium text-blue-700 mb-2">Property Metadata (Debug)</h4>
++              <div className="bg-gray-50 p-3 rounded-lg text-xs font-mono overflow-auto max-h-96">
++                <pre>
++                  {JSON.stringify({
++                    address_components: placeDetails?.address_components,
++                    types: placeDetails?.types,
++                    geometry: {
++                      location: {
++                        lat: placeDetails?.geometry?.location?.lat(),
++                        lng: placeDetails?.geometry?.location?.lng()
++                      },
++                      viewport: placeDetails?.geometry?.viewport,
++                      bounds: placeDetails?.geometry?.bounds
++                    },
++                    formatted_address: placeDetails?.formatted_address,
++                    name: placeDetails?.name,
++                    vicinity: placeDetails?.vicinity
++                  }, null, 2)}
++                </pre>
++              </div>
++            </div>
+           </div>
+         </div>
+       </div>
++      {visionFeedback && (
++        <div className={`p-4 rounded-lg ${visionFeedback.isValid ? 'bg-green-100' : 'bg-yellow-100'}`}>
++          <h3 className="font-semibold mb-2">
++            {visionFeedback.isValid ? 'Valid Placement ✓' : 'Placement Issues ⚠️'}
++          </h3>
++          {visionFeedback.reasons.length > 0 && (
++            <div className="mb-2">
++              <h4 className="font-medium">Analysis:</h4>
++              <ul className="list-disc list-inside">
++                {visionFeedback.reasons.map((reason, i) => (
++                  <li key={i}>{reason}</li>
++                ))}
++              </ul>
++            </div>
++          )}
++          {visionFeedback.suggestions.length > 0 && (
++            <div>
++              <h4 className="font-medium">Suggestions:</h4>
++              <ul className="list-disc list-inside">
++                {visionFeedback.suggestions.map((suggestion, i) => (
++                  <li key={i}>{suggestion}</li>
++                ))}
++              </ul>
++            </div>
++          )}
++        </div>
++      )}
+     </div>
+   );
+ };
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/lib/propertyAnalysis.ts b/CascadeProjects/aduplanner/aduplanner-next/lib/propertyAnalysis.ts
+index 365b830..897b9f5 100644
+--- a/CascadeProjects/aduplanner/aduplanner-next/lib/propertyAnalysis.ts
++++ b/CascadeProjects/aduplanner/aduplanner-next/lib/propertyAnalysis.ts
+@@ -1,4 +1,5 @@
+ import type { PropertyBounds, PropertyDimensions, Setbacks, BuildableArea, ADULayout, PropertyAnalysis } from '@/types/property';
++import { analyzePropertyImage, PropertyAnalysisResult } from './visionAnalysis';
+ 
+ const FEET_PER_DEGREE_LAT = 364000;  // approximate feet per degree of latitude
+ const FEET_PER_DEGREE_LNG = 288200;  // approximate feet per degree of longitude at 40° latitude
+@@ -22,16 +23,161 @@ const ADU_TEMPLATES: ReadonlyArray<ADUTemplate> = [
+ // 3. Property records and deed restrictions
+ // 4. Environmental and historic district data
+ 
+-export async function analyzePropertyByAddress(address: string) {
+-  // PROTOTYPE ONLY - Replace with real API calls
+-  console.warn('Using prototype analysis - real implementation needs zoning API integration');
++export async function isEligiblePropertyType(placeDetails: google.maps.places.PlaceResult): Promise<{ eligible: boolean; reason?: string }> {
++  // First try vision analysis if satellite image is available
++  if (placeDetails.photos && placeDetails.photos.length > 0) {
++    try {
++      const photoUrl = placeDetails.photos[0].getUrl();
++      const visionAnalysis = await analyzePropertyImage(photoUrl);
++      
++      if (visionAnalysis.confidence > 0.8) {
++        if (visionAnalysis.propertyType === 'townhouse') {
++          return { 
++            eligible: false, 
++            reason: 'Property appears to be a townhouse based on satellite imagery analysis' 
++          };
++        }
++        if (visionAnalysis.propertyType === 'single_family' && visionAnalysis.buildableAreas.backYard) {
++          return { 
++            eligible: true 
++          };
++        }
++      }
++    } catch (error) {
++      console.error('Vision analysis failed:', error);
++      // Fall back to traditional checks if vision fails
++    }
++  }
++
++  // Fallback to traditional checks
++  // Log all available metadata
++  console.log('Full Place Details:', {
++    address_components: placeDetails.address_components,
++    adr_address: placeDetails.adr_address,
++    business_status: placeDetails.business_status,
++    formatted_address: placeDetails.formatted_address,
++    geometry: placeDetails.geometry,
++    icon: placeDetails.icon,
++    name: placeDetails.name,
++    photos: placeDetails.photos,
++    place_id: placeDetails.place_id,
++    plus_code: placeDetails.plus_code,
++    rating: placeDetails.rating,
++    reference: placeDetails.reference,
++    reviews: placeDetails.reviews,
++    types: placeDetails.types,
++    url: placeDetails.url,
++    utc_offset: placeDetails.utc_offset,
++    vicinity: placeDetails.vicinity,
++    website: placeDetails.website,
++    html_attributions: placeDetails.html_attributions,
++    utc_offset_minutes: placeDetails.utc_offset_minutes,
++    price_level: placeDetails.price_level,
++    opening_hours: placeDetails.opening_hours
++  });
++
++  // Log specific geometry details
++  if (placeDetails.geometry) {
++    console.log('Location Details:', {
++      lat: placeDetails.geometry.location?.lat(),
++      lng: placeDetails.geometry.location?.lng(),
++      viewport: placeDetails.geometry.viewport,
++      bounds: placeDetails.geometry.bounds
++    });
++  }
++
++  // Log address component details
++  if (placeDetails.address_components) {
++    console.log('Address Components Breakdown:', placeDetails.address_components.map(comp => ({
++      long_name: comp.long_name,
++      short_name: comp.short_name,
++      types: comp.types
++    })));
++  }
++
++  const types = placeDetails.types || [];
++  const addressComponents = placeDetails.address_components || [];
++
++  // Enhanced debug logging
++  console.log('Place Types:', types);
++  console.log('Address Components:', addressComponents);
++  console.log('Formatted Address:', placeDetails.formatted_address);
++  console.log('Place Name:', placeDetails.name);
++
++  // First check: Is it residential?
++  const residentialTypes = ['single_family_dwelling', 'house', 'residential', 'premise', 'street_address'];
++  const isResidential = types.some(type => residentialTypes.includes(type));
++  
++  console.log('Is Residential Check:', { isResidential, matchedTypes: types.filter(t => residentialTypes.includes(t)) });
+   
+-  // Extract location data
++  if (!isResidential) {
++    return {
++      eligible: false,
++      reason: `Not a residential property. Found types: [${types.join(', ')}]`
++    };
++  }
++
++  // Second check: What kind of residential?
++  // Check for townhouse/rowhouse indicators
++  const subpremise = addressComponents.find(comp => comp.types.includes('subpremise'));
++  if (subpremise) {
++    return {
++      eligible: false,
++      reason: 'Property is a townhouse/rowhouse (has unit number)'
++    };
++  }
++
++  // Check for specific residential subtypes that aren't eligible
++  const ineligibleResidentialTypes = [
++    'townhouse',
++    'row_house',
++    'multi_family',
++    'duplex',
++    'triplex',
++    'apartment',
++    'condo'
++  ];
++
++  const foundIneligibleTypes = types.filter(type => ineligibleResidentialTypes.includes(type));
++  if (foundIneligibleTypes.length > 0) {
++    return {
++      eligible: false,
++      reason: `Property is not a detached single-family home. Type: ${foundIneligibleTypes.join(', ')}`
++    };
++  }
++
++  // If it passed all checks, it's likely a detached single-family home
++  return { eligible: true };
++}
++
++export async function analyzePropertyByAddress(address: string, placeDetails: google.maps.places.PlaceResult) {
++  // First check property type eligibility
++  const eligibilityCheck = await isEligiblePropertyType(placeDetails);
++  if (!eligibilityCheck.eligible) {
++    return {
++      eligible: false,
++      reason: eligibilityCheck.reason
++    };
++  }
++
++  // Get vision analysis if available
++  let visionAnalysis: PropertyAnalysisResult | null = null;
++  if (placeDetails.photos && placeDetails.photos.length > 0) {
++    try {
++      const photoUrl = placeDetails.photos[0].getUrl();
++      visionAnalysis = await analyzePropertyImage(photoUrl);
++    } catch (error) {
++      console.error('Vision analysis failed:', error);
++    }
++  }
++
+   const zipCode = address.match(/\b\d{5}\b/)?.[0] || '';
+-  const state = 'UNKNOWN'; // TODO: Get from geocoding API
+   
+   return {
+-    isEligible: true,
++    eligible: true,
++    address,
++    placeDetails,
++    visionAnalysis,
+     zoning: 'R-1 (Single Family Residential)',
+     maxSize: 111.48, // 1200 sq ft
+     restrictions: [
+diff --git a/CascadeProjects/aduplanner/aduplanner-next/lib/visionAnalysis.ts b/CascadeProjects/aduplanner/aduplanner-next/lib/visionAnalysis.ts
+new file mode 100644
+index 0000000..f607968
+--- /dev/null
++++ b/CascadeProjects/aduplanner/aduplanner-next/lib/visionAnalysis.ts
+@@ -0,0 +1,90 @@
++export interface PropertyAnalysisResult {
++  propertyType: 'single_family' | 'townhouse' | 'unknown';
++  buildableAreas: {
++    frontYard?: boolean;
++    backYard?: boolean;
++    sideYards?: boolean;
++    estimatedSize: string;
++  };
++  setbacks: {
++    front: number;
++    back: number;
++    sides: number[];
++  };
++  existingStructures: {
++    type: string;
++    location: string;
++    approximateSize: string;
++  }[];
++  confidence: number;
++}
++
++export async function analyzePropertyImage(imageUrl: string): Promise<PropertyAnalysisResult> {
++  try {
++    const response = await fetch('/api/vision/analyze', {
++      method: 'POST',
++      headers: {
++        'Content-Type': 'application/json',
++      },
++      body: JSON.stringify({ imageUrl }),
++    });
++
++    if (!response.ok) {
++      throw new Error('Vision analysis failed');
++    }
++
++    const result = await response.json();
++    return result as PropertyAnalysisResult;
++  } catch (error) {
++    console.error('Error analyzing property image:', error);
++    return {
++      propertyType: 'unknown',
++      buildableAreas: {
++        estimatedSize: 'unknown'
++      },
++      setbacks: {
++        front: 0,
++        back: 0,
++        sides: [0, 0]
++      },
++      existingStructures: [],
++      confidence: 0
++    };
++  }
++}
++
++export async function validateADUPlacement(
++  propertyImageUrl: string, 
++  aduBounds: { x: number; y: number; width: number; height: number }
++): Promise<{
++  isValid: boolean;
++  reasons: string[];
++  suggestions: string[];
++}> {
++  try {
++    const response = await fetch('/api/vision/validate', {
++      method: 'POST',
++      headers: {
++        'Content-Type': 'application/json',
++      },
++      body: JSON.stringify({ 
++        imageUrl: propertyImageUrl,
++        bounds: aduBounds
++      }),
++    });
++
++    if (!response.ok) {
++      throw new Error('Vision validation failed');
++    }
++
++    const result = await response.json();
++    return result;
++  } catch (error) {
++    console.error('Error validating ADU placement:', error);
++    return {
++      isValid: false,
++      reasons: ['Error analyzing placement'],
++      suggestions: []
++    };
++  }
++}
+-- 
+2.47.1.windows.1
+

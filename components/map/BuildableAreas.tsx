@@ -36,7 +36,8 @@ const BuildableAreas: FC<BuildableAreasProps> = ({ analysis, map }) => {
     // Create polygons for each buildable area
     const newAreas: AreaPolygon[] = [];
 
-    if (analysis.buildableAreas.backYard) {
+    const backYardArea = analysis.buildableAreas.find(area => area.location === 'backyard');
+    if (backYardArea && backYardArea.suitability !== 'poor') {
       // Add back yard area (roughly 40% of the back of the property)
       newAreas.push({
         path: [
@@ -51,30 +52,21 @@ const BuildableAreas: FC<BuildableAreasProps> = ({ analysis, map }) => {
       });
     }
 
-    if (analysis.buildableAreas.sideYards) {
+    const sideYardAreas = analysis.buildableAreas.filter(area => area.location === 'sideyard');
+    if (sideYardAreas.length > 0) {
       // Add side yard areas (roughly 20% on each side)
-      newAreas.push({
-        path: [
-          { lat: center.lat() + height * 0.2, lng: center.lng() - width * 0.4 },
-          { lat: center.lat() + height * 0.2, lng: center.lng() - width * 0.2 },
-          { lat: center.lat() - height * 0.2, lng: center.lng() - width * 0.2 },
-          { lat: center.lat() - height * 0.2, lng: center.lng() - width * 0.4 },
-        ],
-        color: '#FFC107', // Yellow
-        opacity: 0.35,
-        label: 'Side Yard (Potentially Suitable)'
-      });
-
-      newAreas.push({
-        path: [
-          { lat: center.lat() + height * 0.2, lng: center.lng() + width * 0.2 },
-          { lat: center.lat() + height * 0.2, lng: center.lng() + width * 0.4 },
-          { lat: center.lat() - height * 0.2, lng: center.lng() + width * 0.4 },
-          { lat: center.lat() - height * 0.2, lng: center.lng() + width * 0.2 },
-        ],
-        color: '#FFC107', // Yellow
-        opacity: 0.35,
-        label: 'Side Yard (Potentially Suitable)'
+      sideYardAreas.forEach((area, index) => {
+        newAreas.push({
+          path: [
+            { lat: center.lat() + height * 0.2, lng: center.lng() - width * 0.4 + (index * width * 0.4) },
+            { lat: center.lat() + height * 0.2, lng: center.lng() - width * 0.2 + (index * width * 0.4) },
+            { lat: center.lat() - height * 0.2, lng: center.lng() - width * 0.2 + (index * width * 0.4) },
+            { lat: center.lat() - height * 0.2, lng: center.lng() - width * 0.4 + (index * width * 0.4) },
+          ],
+          color: '#FFC107', // Yellow
+          opacity: 0.35,
+          label: 'Side Yard (Potentially Suitable)'
+        });
       });
     }
 

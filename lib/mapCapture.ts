@@ -15,8 +15,8 @@ export async function captureMapView(
 
       // Calculate center and zoom
       const center = {
-        lat: propertyBounds.y + propertyBounds.height / 2,
-        lng: propertyBounds.x + propertyBounds.width / 2
+        lat: (propertyBounds.ne.lat + propertyBounds.sw.lat) / 2,
+        lng: (propertyBounds.ne.lng + propertyBounds.sw.lng) / 2
       };
 
       // Create static map

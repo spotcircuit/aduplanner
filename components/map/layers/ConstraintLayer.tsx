@@ -1,50 +1,150 @@
+    /// <reference types="@types/google.maps" />
+import { FC, useEffect, useRef } from 'react';
+
+interface ConstraintLayerProps {
+  map: google.maps.Map;
+  constraintAnalysis: {
+    property_boundaries: Array<{
+      coordinates: Array<google.maps.LatLngLiteral>
+    }>,
+    structures: Array<{
+      type: string,
+      coordinates: Array<google.maps.LatLngLiteral>
+    }>
+  };
+  onConstraintsReady?: (buildableArea: number) => void;
+}
+
+interface Constraint {
+  polygon: google.maps.Polygon;
+  type: 'property' | 'structure';
+  area: number;
+  coordinates: google.maps.LatLngLiteral[];
+}
+
+const ConstraintLayer: FC<ConstraintLayerProps> = ({ map, constraintAnalysis, onConstraintsReady }) => {
+  const constraints = useRef<Constraint[]>([]);
+
+  const validateCoordinates = (coords: google.maps.LatLngLiteral[]): boolean => {
+    if (!coords || coords.length < 3) {
+      console.warn('Invalid coordinates: Less than 3 points');
+      return false;
     }
-
-    const mainHouseSizeStr = ExistingStructuresAndFeatures.MainHouseSize || '';
-    const sizeMatch = mainHouseSizeStr.match(/(\d+)/);
-    const mainHouseSize = sizeMatch ? parseInt(sizeMatch[0]) : 1500; 
-
-    const mainHouseCoords = estimateMainHouseCoordinates(map.getCenter(), mainHouseSize);
-    const mainHouseConstraint = createPolygon(mainHouseCoords, 'structure');
-    if (mainHouseConstraint) {
-      constraints.current.push(mainHouseConstraint);
-
-      const setbackDistances = {
-        front: parseInt(SetbackAndBuildableAreaAnalysis.FrontYardSetback || '20'),
-        side: parseInt(SetbackAndBuildableAreaAnalysis.SideYardSetback || '5'),
-        rear: parseInt(SetbackAndBuildableAreaAnalysis.RearYardSetback || '10')
-      };
-
-      const setbackConstraint = createSetbackPolygon(mainHouseCoords, Math.max(...Object.values(setbackDistances)));
-      if (setbackConstraint) {
-        constraints.current.push(setbackConstraint);
-      }
-    }
-
-    const frontYardCoords = [
-      { lat: map.getCenter().lat() - 0.0004, lng: map.getCenter().lng() - 0.0004 },
-      { lat: map.getCenter().lat() - 0.0004, lng: map.getCenter().lng() + 0.0004 },
-      { lat: map.getCenter().lat() - 0.0002, lng: map.getCenter().lng() + 0.0004 },
-      { lat: map.getCenter().lat() - 0.0002, lng: map.getCenter().lng() - 0.0004 }
-    ];
-    const frontYardConstraint = createPolygon(frontYardCoords, 'frontYard');
-    if (frontYardConstraint) {
-      constraints.current.push(frontYardConstraint);
-    }
-
-    const totalConstrainedArea = constraints.current.reduce((sum, c) => sum + c.area, 0);
     
-    const buildableAreaStr = SetbackAndBuildableAreaAnalysis.BuildableArea || '';
-    const buildableAreaMatch = buildableAreaStr.match(/(\d+)/);
-    const buildableArea = buildableAreaMatch ? parseInt(buildableAreaMatch[0]) : null;
+    // Ensure coordinates form a valid polygon (first and last points should match)
+    const path = coords.map(c => new google.maps.LatLng(c));
+    if (path.length >= 3) {
+      path.push(path[0]); // Close the polygon
+    }
+    
+    return true;
+  };
 
-    console.log('Constraints created:', constraints.current);
-    console.log('Total constrained area:', totalConstrainedArea);
-    console.log('Buildable area from analysis:', buildableArea);
+  const calculatePolygonArea = (coords: google.maps.LatLngLiteral[]): number => {
+    if (!coords || coords.length < 3) return 0;
+    
+    const path = coords.map(c => new google.maps.LatLng(c));
+    // Close the polygon if not already closed
+    if (path.length >= 3 && !path[0].equals(path[path.length - 1])) {
+      path.push(path[0]);
+    }
+    
+    return google.maps.geometry?.spherical?.computeArea(path) || 0;
+  };
 
-    onConstraintsReady?.(buildableArea || (totalConstrainedArea * 0.6)); 
+  const createPolygon = (coords: google.maps.LatLngLiteral[], type: Constraint['type']): Constraint | null => {
+    if (!validateCoordinates(coords)) return null;
 
-  }, [map, visionAnalysis, onConstraintsReady]);
+    const color = {
+      property: '#0066FF',  // Blue for property
+      structure: '#FF4444'  // Red for structures
+    }[type];
+
+    // Create a closed polygon path
+    const path = coords.map(c => new google.maps.LatLng(c));
+    if (path.length >= 3 && !path[0].equals(path[path.length - 1])) {
+      path.push(path[0]);
+    }
+
+    const polygon = new google.maps.Polygon({
+      paths: path,
+      strokeColor: color,
+      strokeOpacity: 0.9,
+      strokeWeight: 2,
+      fillColor: color,
+      fillOpacity: type === 'property' ? 0.2 : 0.4,
+      map
+    });
+
+    const area = calculatePolygonArea(coords);
+    console.log(`Created ${type} polygon with area: ${area.toFixed(2)} sq meters`);
+
+    return {
+      polygon,
+      type,
+      area,
+      coordinates: coords
+    };
+  };
+
+  useEffect(() => {
+    // Clear existing polygons
+    constraints.current.forEach(constraint => {
+      constraint.polygon.setMap(null);
+    });
+    constraints.current = [];
+
+    try {
+      // Create property boundary
+      if (constraintAnalysis.property_boundaries?.[0]) {
+        const propertyCoords = constraintAnalysis.property_boundaries[0].coordinates;
+        const propertyConstraint = createPolygon(propertyCoords, 'property');
+        if (propertyConstraint) {
+          constraints.current.push(propertyConstraint);
+          console.log('Property boundary created:', {
+            coordinates: propertyCoords,
+            area: propertyConstraint.area
+          });
+        }
+      }
+
+      // Create structure polygons
+      constraintAnalysis.structures?.forEach((structure, index) => {
+        const structureConstraint = createPolygon(structure.coordinates, 'structure');
+        if (structureConstraint) {
+          constraints.current.push(structureConstraint);
+          console.log(`Structure ${index + 1} (${structure.type}) created:`, {
+            coordinates: structure.coordinates,
+            area: structureConstraint.area
+          });
+        }
+      });
+
+      // Calculate buildable area
+      const propertyArea = constraints.current.find(c => c.type === 'property')?.area || 0;
+      const structureAreas = constraints.current
+        .filter(c => c.type === 'structure')
+        .reduce((total, structure) => total + structure.area, 0);
+
+      const buildableArea = Math.max(0, propertyArea - structureAreas);
+      
+      console.log('Area calculations:', {
+        propertyArea: propertyArea.toFixed(2),
+        structureAreas: structureAreas.toFixed(2),
+        buildableArea: buildableArea.toFixed(2)
+      });
+
+      onConstraintsReady?.(buildableArea);
+    } catch (error) {
+      console.error('Error creating constraint polygons:', error);
+    }
+
+    return () => {
+      constraints.current.forEach(constraint => {
+        constraint.polygon.setMap(null);
+      });
+    };
+  }, [map, constraintAnalysis, onConstraintsReady]);
 
   return null;
 };

@@ -24,11 +24,12 @@ export default function Home() {
     placeDetails: google.maps.places.PlaceResult;
     analysis: {
       isEligible: boolean;
+      reason?: string;
       zoning: string;
       maxSize: number;
       restrictions: string[];
       disclaimers: string[];
-    };
+    } | null;
   } | null>(null);
 
   const handleAddressSelect = async (
@@ -38,7 +39,7 @@ export default function Home() {
   ) => {
     // Get the initial analysis using the place details
     const analysis = await analyzePropertyByAddress(address, placeDetails);
-    setSelectedLocation({ location, address, placeDetails, analysis });
+    setSelectedLocation({ location, address, placeDetails, analysis: { isEligible: analysis.eligible, zoning: analysis.zoning || 'UNKNOWN', maxSize: analysis.maxSize || 0, restrictions: analysis.restrictions || [], disclaimers: analysis.disclaimers || [] } });
   };
 
   return (

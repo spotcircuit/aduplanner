@@ -4,14 +4,19 @@ import { useState, useCallback, type FC } from 'react';
 import type { LatLngLiteral } from '@googlemaps/google-maps-services-js';
 import VisionAnalysis from './VisionAnalysis';
 import PropertyMap from './PropertyMap';
+import type { PropertyMapInstance } from './PropertyMap';
+import { analyzeConstraints } from '@/lib/ConstraintAnalysis';
+import type { ConstraintAnalysisResult } from '@/lib/ConstraintAnalysis';
+import html2canvas from 'html2canvas';
 import { 
   InformationCircleIcon,
   ChevronRightIcon,
   XMarkIcon,
   HomeIcon,
-  EyeIcon
+  EyeIcon,
+  ChevronDownIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline';
-import html2canvas from 'html2canvas';
 
 interface PropertyPlannerProps {
   location: LatLngLiteral;
@@ -23,7 +28,13 @@ interface PropertyPlannerProps {
     maxSize: number;
     restrictions: string[];
     disclaimers: string[];
+    ineligibilityReason?: string;
   };
+}
+
+// Extend PlaceGeometry to include bounds
+interface ExtendedPlaceGeometry extends google.maps.places.PlaceGeometry {
+  bounds?: google.maps.LatLngBounds;
 }
 
 const PropertyPlanner: FC<PropertyPlannerProps> = ({ 
@@ -35,92 +46,82 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [drawingMode, setDrawingMode] = useState<'polygon' | null>(null);
   const [isDrawingActive, setIsDrawingActive] = useState(false);
-  const [visionAnalysis, setVisionAnalysis] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<ConstraintAnalysisResult | null>(null);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [visionAnalysis, setVisionAnalysis] = useState<any>(null);
+  const [isMetadataVisible, setIsMetadataVisible] = useState(false);
 
   const handleBoundaryComplete = useCallback((shape: google.maps.Polygon) => {
     console.log('Boundary complete:', shape);
   }, []);
 
-  const analyzePropertyWithVision = useCallback(async (map: google.maps.Map) => {
+  const analyzePropertyWithVision = useCallback(async (map: google.maps.Map, propertyMap: PropertyMapInstance) => {
+    setIsAnalyzing(true);
     try {
-      console.log('Starting vision analysis');
-      setIsAnalyzing(true);
-      setAnalysisError(null);
+      const bounds = map.getBounds();
+      if (!bounds) {
+        throw new Error('Map bounds not available');
+      }
 
-      // Wait one frame to ensure canvas is ready
-      await new Promise(resolve => requestAnimationFrame(resolve));
-
-      // Get the map div and try to capture it
+      // Get the current map view as an image
       const mapDiv = map.getDiv();
-      console.log('Map div found:', mapDiv);
-
-      // Use html2canvas for better capture quality
       const canvas = await html2canvas(mapDiv, {
         useCORS: true,
         allowTaint: true,
-        logging: true,
-        backgroundColor: null,
-        scale: 2 // Higher quality
+        scale: 2,
       });
 
-      console.log('Canvas captured, size:', canvas.width, 'x', canvas.height);
-      const imageUrl = canvas.toDataURL('image/jpeg', 0.95);
-      console.log('Image URL length:', imageUrl.length);
-      
-      // Send to Vision API
-      const response = await fetch('/api/vision/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          imageUrl: imageUrl,
-          address: address
-        }),
+      const analysis = await analyzeConstraints({
+        image: canvas.toDataURL('image/jpeg', 0.9),
+        prompt: 'Analyze this satellite image for property constraints',
+        propertyCenter: location,
+        zoomLevel: map.getZoom() || 19
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to analyze property');
-      }
-
-      const data = await response.json();
-      console.log('Vision analysis complete:', data);
-      setVisionAnalysis(data);
+      setAnalysis(analysis);
+      setShowAnalysis(true);
+      setIsAnalyzing(false);
     } catch (error) {
-      console.error('Vision analysis error:', error);
+      console.error('Error analyzing property:', error);
       setAnalysisError(error instanceof Error ? error.message : 'Failed to analyze property');
     } finally {
       setIsAnalyzing(false);
     }
-  }, [address]);
+  }, [address, location]);
 
   return (
     <div className="container mx-auto p-4">
       {/* Header with title and analyze button */}
       <div className="flex justify-between items-center mb-4">
         <button
-          onClick={() => map && analyzePropertyWithVision(map)}
+          onClick={() => map && analyzePropertyWithVision(map, {
+            map,
+            drawingMode,
+            setDrawingMode,
+            setIsDrawingActive
+          })}
           disabled={isAnalyzing || !map}
           className={`
             flex items-center space-x-2 px-4 py-2 rounded-lg shadow-lg
-            transition-all duration-200 ease-in-out
-            ${isAnalyzing || !map
-              ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-700 text-white'
+            ${isAnalyzing 
+              ? 'bg-blue-100 text-blue-400 cursor-not-allowed'
+              : 'bg-blue-600 text-white hover:bg-blue-700'
             }
           `}
         >
-          <EyeIcon className="h-5 w-5" />
-          <span>
-            {isAnalyzing 
-              ? 'Analyzing...' 
-              : !map 
-                ? 'Loading Map...'
-                : 'Analyze Property'
-            }
-          </span>
+          {isAnalyzing ? (
+            <>
+              <ArrowPathIcon className="w-5 h-5 animate-spin" />
+              <span>Analyzing...</span>
+            </>
+          ) : (
+            <>
+              <InformationCircleIcon className="w-5 h-5" />
+              <span>Analyze Property</span>
+            </>
+          )}
         </button>
       </div>
       
@@ -131,7 +132,12 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
             <div className="p-4 bg-red-50 rounded-lg text-red-700 mb-4">
               <p>{analysisError}</p>
               <button 
-                onClick={() => map && analyzePropertyWithVision(map)}
+                onClick={() => map && analyzePropertyWithVision(map, {
+                  map,
+                  drawingMode,
+                  setDrawingMode,
+                  setIsDrawingActive
+                })}
                 className="mt-2 text-sm font-medium text-red-600 hover:text-red-500"
               >
                 Try Again
@@ -158,8 +164,6 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
             drawingMode={drawingMode}
             setDrawingMode={setDrawingMode}
             setIsDrawingActive={setIsDrawingActive}
-            handleBoundaryComplete={handleBoundaryComplete}
-            isAnalyzing={isAnalyzing}
             onAnalyze={analyzePropertyWithVision}
           />
         </div>
@@ -183,12 +187,14 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
                   </div>
                 </div>
                 
-                {!initialAnalysis?.isEligible && initialAnalysis?.ineligibilityReason && (
+                {!initialAnalysis?.isEligible && (
                   <div className="flex items-start gap-2 bg-red-50 p-3 rounded-lg border border-red-100">
                     <XMarkIcon className="h-5 w-5 text-red-500 mt-1 flex-shrink-0" />
                     <div>
-                      <p className="text-red-700 font-medium">Not Eligible for ADU</p>
-                      <p className="text-red-600">{initialAnalysis.ineligibilityReason}</p>
+                      <p className="font-medium text-red-700">Property is not eligible</p>
+                      {initialAnalysis?.ineligibilityReason && (
+                        <p className="text-sm text-red-600 mt-1">{initialAnalysis.ineligibilityReason}</p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -257,6 +263,61 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
               </div>
             </div>
 
+            {/* Property Metadata - Collapsible */}
+            <div className="border-t border-blue-100 pt-3 mt-3">
+              <button
+                onClick={() => setIsMetadataVisible(!isMetadataVisible)}
+                className="w-full flex items-center justify-between text-sm font-medium text-blue-700 hover:text-blue-800 transition-colors"
+              >
+                <span>Property Metadata</span>
+                <ChevronDownIcon 
+                  className={`h-5 w-5 transition-transform ${isMetadataVisible ? 'rotate-180' : ''}`}
+                />
+              </button>
+              <div className={`transition-all duration-200 ease-in-out ${isMetadataVisible ? 'max-h-[500px] opacity-100 mt-2' : 'max-h-0 opacity-0 overflow-hidden'}`}>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {placeDetails?.types && placeDetails.types.length > 0 && (
+                    <div>
+                      <span className="text-gray-600">Type:</span>
+                      <span className="text-gray-900 ml-1">
+                        {placeDetails.types.map(type => 
+                          type.replace(/_/g, ' ').toLowerCase()
+                        ).join(', ')}
+                      </span>
+                    </div>
+                  )}
+                  {initialAnalysis?.zoning && (
+                    <div>
+                      <span className="text-gray-600">Zoning:</span>
+                      <span className="text-gray-900 ml-1">{initialAnalysis.zoning}</span>
+                    </div>
+                  )}
+                  {initialAnalysis?.maxSize && (
+                    <div>
+                      <span className="text-gray-600">Max ADU Size:</span>
+                      <span className="text-gray-900 ml-1">{initialAnalysis.maxSize} sqft</span>
+                    </div>
+                  )}
+                  {placeDetails?.geometry?.location && (
+                    <>
+                      <div>
+                        <span className="text-gray-600">Lat:</span>
+                        <span className="text-gray-900 ml-1">
+                          {placeDetails.geometry.location.lat().toFixed(6)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Lng:</span>
+                        <span className="text-gray-900 ml-1">
+                          {placeDetails.geometry.location.lng().toFixed(6)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Restrictions */}
             <div className="mb-6">
               <h3 className="text-lg font-medium mb-2 flex items-center gap-2">
@@ -299,11 +360,13 @@ const PropertyPlanner: FC<PropertyPlannerProps> = ({
                     types: placeDetails?.types,
                     geometry: {
                       location: {
-                        lat: placeDetails?.geometry?.location?.lat(),
-                        lng: placeDetails?.geometry?.location?.lng()
+                        lat: placeDetails?.geometry?.location?.lat() || location.lat,
+                        lng: placeDetails?.geometry?.location?.lng() || location.lng
                       },
-                      viewport: placeDetails?.geometry?.viewport,
-                      bounds: placeDetails?.geometry?.bounds
+                      viewport: placeDetails?.geometry?.viewport || undefined,
+                      ...(placeDetails?.geometry && (placeDetails.geometry as ExtendedPlaceGeometry).bounds && {
+                        bounds: (placeDetails.geometry as ExtendedPlaceGeometry).bounds
+                      })
                     },
                     formatted_address: placeDetails?.formatted_address,
                     name: placeDetails?.name,

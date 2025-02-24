@@ -23,12 +23,16 @@ const ADU_TEMPLATES: ReadonlyArray<ADUTemplate> = [
 // 3. Property records and deed restrictions
 // 4. Environmental and historic district data
 
+interface ExtendedPlaceGeometry extends google.maps.places.PlaceGeometry {
+  bounds?: google.maps.LatLngBounds;
+}
+
 export async function isEligiblePropertyType(placeDetails: google.maps.places.PlaceResult): Promise<{ eligible: boolean; reason?: string }> {
   // First try vision analysis if satellite image is available
   if (placeDetails.photos && placeDetails.photos.length > 0) {
     try {
       const photoUrl = placeDetails.photos[0].getUrl();
-      const visionAnalysis = await analyzePropertyImage(photoUrl);
+      const visionAnalysis = (await analyzePropertyImage(photoUrl)).processed;
       
       if (visionAnalysis.confidence > 0.8) {
         if (visionAnalysis.propertyType === 'townhouse') {
@@ -37,7 +41,8 @@ export async function isEligiblePropertyType(placeDetails: google.maps.places.Pl
             reason: 'Property appears to be a townhouse based on satellite imagery analysis' 
           };
         }
-        if (visionAnalysis.propertyType === 'single_family' && visionAnalysis.buildableAreas.backYard) {
+        if (visionAnalysis.propertyType === 'single_family' && 
+            visionAnalysis.buildableAreas.some(area => area.location === 'backyard')) {
           return { 
             eligible: true 
           };
@@ -63,7 +68,6 @@ export async function isEligiblePropertyType(placeDetails: google.maps.places.Pl
     place_id: placeDetails.place_id,
     plus_code: placeDetails.plus_code,
     rating: placeDetails.rating,
-    reference: placeDetails.reference,
     reviews: placeDetails.reviews,
     types: placeDetails.types,
     url: placeDetails.url,
@@ -82,7 +86,9 @@ export async function isEligiblePropertyType(placeDetails: google.maps.places.Pl
       lat: placeDetails.geometry.location?.lat(),
       lng: placeDetails.geometry.location?.lng(),
       viewport: placeDetails.geometry.viewport,
-      bounds: placeDetails.geometry.bounds
+      ...((placeDetails.geometry as ExtendedPlaceGeometry).bounds && {
+        bounds: (placeDetails.geometry as ExtendedPlaceGeometry).bounds
+      })
     });
   }
 
@@ -165,7 +171,7 @@ export async function analyzePropertyByAddress(address: string, placeDetails: go
   if (placeDetails.photos && placeDetails.photos.length > 0) {
     try {
       const photoUrl = placeDetails.photos[0].getUrl();
-      visionAnalysis = await analyzePropertyImage(photoUrl);
+      visionAnalysis = (await analyzePropertyImage(photoUrl)).processed;
     } catch (error) {
       console.error('Vision analysis failed:', error);
     }

@@ -1,25 +1,52 @@
 export interface PropertyAnalysisResult {
   propertyType: 'single_family' | 'townhouse' | 'unknown';
-  buildableAreas: {
-    frontYard?: boolean;
-    backYard?: boolean;
-    sideYards?: boolean;
-    estimatedSize: string;
-  };
-  setbacks: {
-    front: number;
-    back: number;
-    sides: number[];
-  };
-  existingStructures: {
-    type: string;
-    location: string;
-    approximateSize: string;
-  }[];
   confidence: number;
+  structures: Array<{
+    type: string;
+    condition: 'excellent' | 'good' | 'poor';
+    location: string;
+    notes: string[];
+  }>;
+  setbacks: {
+    front: number;    // feet from front property line
+    back: number;     // feet from back property line
+    left: number;     // feet from left property line
+    right: number;    // feet from right property line
+    notes: string[];  // any special considerations
+  };
+  buildableAreas: Array<{
+    location: string;
+    suitability: 'excellent' | 'good' | 'poor';
+    estimatedSize: string;
+    advantages: string[];
+    challenges: string[];
+  }>;
+  terrain: {
+    description: string;
+    concerns: string[];
+    opportunities: string[];
+  };
+  access: {
+    bestRoutes: string[];
+    privacyFeatures: string[];
+    challenges: string[];
+  };
+  constructionSuitability: {
+    bestLocations: Array<{
+      location: string;
+      rating: 'excellent' | 'good' | 'poor';
+      reasons: string[];
+    }>;
+    generalNotes: string[];
+  };
 }
 
-export async function analyzePropertyImage(imageUrl: string): Promise<PropertyAnalysisResult> {
+export interface VisionAnalysisResponse {
+  raw: string;
+  processed: PropertyAnalysisResult;
+}
+
+export async function analyzePropertyImage(imageUrl: string): Promise<VisionAnalysisResponse> {
   console.log('Starting vision analysis...');
   try {
     console.log('Sending request to /api/vision/analyze');
@@ -36,40 +63,50 @@ export async function analyzePropertyImage(imageUrl: string): Promise<PropertyAn
     console.log('Response text:', responseText);
 
     if (!response.ok) {
-      throw new Error(`Vision analysis failed: ${response.status} ${responseText}`);
+      throw new Error(`Vision analysis failed: ${response.statusText}`);
     }
 
-    // Try to parse the response as JSON
-    let result;
-    try {
-      result = JSON.parse(responseText);
-    } catch (e) {
-      console.error('Failed to parse response as JSON:', e);
-      throw new Error('Invalid JSON response from vision analysis');
-    }
+    const result = await response.json();
 
     // Validate the response shape
-    if (!result.propertyType || !result.buildableAreas || !result.setbacks) {
+    if (!result.processed || !result.processed.structures || !result.processed.setbacks || !result.processed.buildableAreas || !result.processed.terrain || !result.processed.access || !result.processed.constructionSuitability) {
       console.error('Invalid response structure:', result);
       throw new Error('Invalid response structure from vision analysis');
     }
 
-    return result as PropertyAnalysisResult;
+    return result;
   } catch (error) {
     console.error('Error in analyzePropertyImage:', error);
     // Return a default result on error
     return {
-      propertyType: 'unknown',
-      buildableAreas: {
-        estimatedSize: 'unknown'
-      },
-      setbacks: {
-        front: 0,
-        back: 0,
-        sides: [0, 0]
-      },
-      existingStructures: [],
-      confidence: 0
+      raw: '',
+      processed: {
+        propertyType: 'unknown',
+        confidence: 0,
+        structures: [],
+        setbacks: {
+          front: 0,
+          back: 0,
+          left: 0,
+          right: 0,
+          notes: []
+        },
+        buildableAreas: [],
+        terrain: {
+          description: '',
+          concerns: [],
+          opportunities: []
+        },
+        access: {
+          bestRoutes: [],
+          privacyFeatures: [],
+          challenges: []
+        },
+        constructionSuitability: {
+          bestLocations: [],
+          generalNotes: []
+        }
+      }
     };
   }
 }

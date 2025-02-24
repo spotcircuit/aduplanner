@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@googlemaps/google-maps-services-js": "^3.4.0",
+    "@googlemaps/react-wrapper": "^1.1.42",
     "@heroicons/react": "^2.2.0",
     "@react-google-maps/api": "^2.19.2",
     "html2canvas": "^1.4.1",
